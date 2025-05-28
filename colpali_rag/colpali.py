@@ -96,6 +96,7 @@ class ColPaliModel:
                 ColPaliProcessor.from_pretrained(
                     self.pretrained_model_name_or_path,
                     token=os.getenv("HF_TOKEN"),
+                    use_fast = True
                 ),
             )
         elif "colqwen2" in pretrained_model_name_or_path.lower():
@@ -104,6 +105,7 @@ class ColPaliModel:
                 ColQwen2Processor.from_pretrained(
                     self.pretrained_model_name_or_path,
                     token=os.getenv("HF_TOKEN"),
+                    use_fast = True
                 ),
             )
 
