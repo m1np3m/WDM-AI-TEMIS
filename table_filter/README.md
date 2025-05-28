@@ -11,16 +11,13 @@ Công cụ này được thiết kế để xử lý hàng loạt các tệp PDF
     *   **Hybrid Mode:** Kết hợp thông minh kết quả từ tất cả các phương pháp trên để đưa ra quyết định cuối cùng, có tính đến độ tin cậy của từng phương pháp.
 *   **Xử lý hàng loạt:** Có khả năng xử lý tất cả các tệp PDF trong một thư mục đầu vào được chỉ định.
 *   **Đầu ra có tổ chức:** Lưu các tệp PDF đã được lọc vào một thư mục đầu ra riêng biệt, giữ nguyên tên tệp gốc với hậu tố `_tables_only`.
-*   **Cấu hình linh hoạt:** Cho phép tùy chỉnh các tham số quan trọng thông qua dòng lệnh, bao gồm:
-    *   Phương pháp phát hiện.
-    *   Ngưỡng tin cậy cho mô hình vision.
-    *   Độ phân giải DPI cho việc chuyển đổi PDF sang ảnh.
-    *   Mức độ chi tiết của log.
+*   **Cấu hình linh hoạt:** Cho phép tùy chỉnh các tham số quan trọng thông qua dòng lệnh.
 *   **Logging chi tiết:** Cung cấp thông tin log về quá trình xử lý từng tệp và từng trang.
 
 ## Yêu cầu hệ thống
 
 *   Python 3.8+
+*   **`uv` (Trình quản lý gói và môi trường ảo):** Xem [hướng dẫn cài đặt `uv`](https://github.com/astral-sh/uv).
 *   Ghostscript (thường cần thiết cho Camelot, đặc biệt trên Windows)
 *   Nếu sử dụng Vision Model với GPU:
     *   NVIDIA GPU với CUDA Toolkit được cài đặt.
@@ -28,38 +25,63 @@ Công cụ này được thiết kế để xử lý hàng loạt các tệp PDF
 
 ## Cài đặt
 
-1.  **Clone repository (nếu có):**
+1.  **Cài đặt `uv`:**
+    Nếu bạn chưa có `uv`, hãy cài đặt theo hướng dẫn trên [trang chính thức của `uv`](https://github.com/astral-sh/uv).
+    Ví dụ:
+    ```bash
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    ```
+
+2.  **Clone repository (nếu có):**
     ```bash
     # git clone <your-repository-url>
     # cd <repository-name>
     ```
 
-2.  **Tạo và kích hoạt môi trường ảo (khuyến nghị):**
+3.  **Tạo và kích hoạt môi trường ảo với `uv`:**
     ```bash
-    python -m venv venv
+    uv venv  # Tạo môi trường ảo trong thư mục .venv
     ```
+    Kích hoạt môi trường:
     *   Trên Linux/macOS:
         ```bash
-        source venv/bin/activate
+        source .venv/bin/activate
         ```
-    *   Trên Windows:
+    *   Trên Windows (PowerShell):
         ```bash
-        venv\Scripts\activate
+        .venv\Scripts\Activate.ps1
+        ```
+    *   Trên Windows (Command Prompt):
+        ```bash
+        .venv\Scripts\activate.bat
         ```
 
-3.  **Cài đặt các thư viện cần thiết:**
+4.  **Cài đặt các thư viện cần thiết:**
     Đảm bảo bạn có file `requirements.txt` trong thư mục dự án.
     ```bash
-    pip install -r requirements.txt
+    uv pip install -r requirements.txt
     ```
-    *Lưu ý:* Lần đầu tiên chạy script với phương pháp `vision_model` hoặc `hybrid`, mô hình `microsoft/table-transformer-detection` sẽ được tải xuống từ Hugging Face Hub. Quá trình này có thể mất một chút thời gian và yêu cầu kết nối internet.
 
-4.  **(Tùy chọn - Windows) Cài đặt Ghostscript:**
+5.  **Đăng nhập vào Hugging Face Hub (Quan trọng cho Vision Model):**
+    Nếu bạn dự định sử dụng phương pháp `vision_model` hoặc `hybrid`, bạn cần đăng nhập vào Hugging Face Hub để tải mô hình.
+    *   Đảm bảo `huggingface_hub` đã được cài đặt (thường đi kèm với `transformers`). Nếu không, hãy cài đặt:
+        ```bash
+        uv pip install huggingface_hub
+        ```
+    *   Chạy lệnh sau trong terminal (trong môi trường ảo đã kích hoạt) và làm theo hướng dẫn:
+        ```bash
+        huggingface-cli login
+        ```
+        Bạn sẽ cần một token truy cập từ tài khoản Hugging Face của mình. Bạn có thể tạo token tại [Hugging Face Tokens](https://huggingface.co/settings/tokens). Hãy tạo token với quyền `read`.
+
+    *Lưu ý:* Lần đầu tiên chạy script với phương pháp `vision_model` hoặc `hybrid` (sau khi đăng nhập), mô hình `microsoft/table-transformer-detection` sẽ được tải xuống từ Hugging Face Hub. Quá trình này có thể mất một chút thời gian và yêu cầu kết nối internet.
+
+6.  **(Tùy chọn - Windows) Cài đặt Ghostscript:**
     Nếu bạn gặp lỗi liên quan đến Ghostscript khi sử dụng Camelot, hãy tải và cài đặt Ghostscript từ [trang web chính thức](https://www.ghostscript.com/releases/gsdnld.html) và đảm bảo nó được thêm vào PATH hệ thống của bạn.
 
 ## Cách sử dụng
 
-Script được chạy từ dòng lệnh.
+Script được chạy từ dòng lệnh sau khi môi trường ảo đã được kích hoạt và các dependencies đã được cài đặt.
 
 **Cú pháp cơ bản:**
 
@@ -85,13 +107,7 @@ python pdf_table_filter_script.py <input_directory> <output_directory> [options]
     python pdf_table_filter_script.py ./input_pdfs ./output_filtered_pdfs --method vision_model --dpi 288 --log_level DEBUG
     ```
 
-3.  **Chỉ sử dụng phương pháp truyền thống, tùy chỉnh ngưỡng tin cậy cho Vision (nếu hybrid được dùng sau này):**
-    ```bash
-    python pdf_table_filter_script.py ./input_pdfs ./output_filtered_pdfs --method traditional --vision_high_conf 0.98
-    ```
-
 **Các tùy chọn dòng lệnh (`[options]`):**
-
 *   `--method {vision_model,traditional,hybrid}`: Phương pháp phát hiện bảng (mặc định: `hybrid`).
 *   `--vision_threshold VISION_THRESHOLD`: Ngưỡng tin cậy chung cho vision model (0.0-1.0, mặc định: `0.85`). Dùng trong bước kiểm tra ban đầu của vision model.
 *   `--dpi DPI`: Độ phân giải ảnh (DPI) khi chuyển PDF sang ảnh (mặc định: `216`). DPI cao hơn cho ảnh rõ hơn nhưng xử lý chậm hơn.
@@ -121,8 +137,12 @@ your_project_directory/
 
 ## Xử lý sự cố
 
+*   **Lỗi `401 Unauthorized` khi tải model từ Hugging Face:**
+    *   Đảm bảo bạn đã đăng nhập vào Hugging Face CLI bằng lệnh `huggingface-cli login` (xem mục "Cài đặt").
+    *   Kiểm tra xem token Hugging Face của bạn có còn hợp lệ và có quyền `read` không.
+    *   Một số model có thể yêu cầu bạn chấp nhận điều khoản sử dụng trên trang web của model đó trước khi có thể tải về. Truy cập trang của model `microsoft/table-transformer-detection` trên Hugging Face Hub và kiểm tra.
 *   **Lỗi `ghostscript` (thường với Camelot):** Đảm bảo Ghostscript đã được cài đặt và thêm vào PATH hệ thống.
-*   **Lỗi tải model:** Kiểm tra kết nối internet. Nếu bạn ở sau proxy, có thể cần cấu hình biến môi trường `HTTP_PROXY` và `HTTPS_PROXY`.
+*   **Lỗi tải model (ngoài lỗi 401):** Kiểm tra kết nối internet. Nếu bạn ở sau proxy, có thể cần cấu hình biến môi trường `HTTP_PROXY` và `HTTPS_PROXY`.
 *   **Hiệu suất chậm:**
     *   Giảm giá trị DPI (ví dụ: `144` hoặc `150`) có thể tăng tốc độ xử lý nhưng có thể làm giảm độ chính xác của Vision Model.
     *   Nếu không cần Vision Model, sử dụng phương pháp `traditional`.
