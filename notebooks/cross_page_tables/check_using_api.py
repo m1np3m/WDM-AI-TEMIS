@@ -20,15 +20,19 @@ gcloud auth application-default set-quota-project YOUR_PROJECT_ID
 
 Bước 4: Đảm bảo Vertex AI được bật
 """
-from google import genai
-from google.genai import types
+
 import base64
 import json
-import os
 import logging
+import os
 
-YOUR_PROJECT_ID = "oval-crawler-460614-d3"
+from dotenv import load_dotenv
+from google import genai
+from google.genai import types
 
+load_dotenv()
+
+VERTEXAI_PROJECT_ID = os.getenv("VERTEXAI_PROJECT_ID")
 
 
 SYSTEM_INSTRUCTION = """You are an expert in table analysis and restructuring. Your primary task is to determine which provided table fragments belong together to form complete logical tables, based on their context and content.
@@ -70,17 +74,10 @@ Please analyze the following table fragments:\n
 """
 
 
-
-
-
-
-
-
-
 def generate(full_prompt: str):
     client = genai.Client(
         vertexai=True,
-        project=YOUR_PROJECT_ID,
+        project=VERTEXAI_PROJECT_ID,
         location="global",
         # api_key=os.getenv("VERTEX_API_KEY"),
     )
@@ -89,49 +86,71 @@ def generate(full_prompt: str):
     si_text1 = SYSTEM_INSTRUCTION
     model = "gemini-2.0-flash-001"
     contents = [
-    types.Content(
-        role="user",
-        parts=[
-        msg1_text1
-        ]
-    ),
+        types.Content(role="user", parts=[msg1_text1]),
     ]
 
     generate_content_config = types.GenerateContentConfig(
-    temperature = 0,
-    top_p = 1,
-    max_output_tokens = 8192,
-    safety_settings = [types.SafetySetting(
-        category="HARM_CATEGORY_HATE_SPEECH",
-        threshold="OFF"
-    ),types.SafetySetting(
-        category="HARM_CATEGORY_DANGEROUS_CONTENT",
-        threshold="OFF"
-    ),types.SafetySetting(
-        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
-        threshold="OFF"
-    ),types.SafetySetting(
-        category="HARM_CATEGORY_HARASSMENT",
-        threshold="OFF"
-    )],
-    response_mime_type = "application/json",
-    response_schema = {"type":"OBJECT","required":["concatable_tables"],"properties":{"concatable_tables":{"type":"ARRAY","items":{"type":"OBJECT","required":["table_index"],"properties":{"table_index":{"type":"ARRAY","items":{"type":"NUMBER"}}}}}}},
-    system_instruction=[types.Part.from_text(text=si_text1)],
+        temperature=0,
+        top_p=1,
+        max_output_tokens=8192,
+        safety_settings=[
+            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="OFF"),
+            types.SafetySetting(
+                category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="OFF"
+            ),
+            types.SafetySetting(
+                category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="OFF"
+            ),
+            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="OFF"),
+        ],
+        response_mime_type="application/json",
+        response_schema={
+            "type": "OBJECT",
+            "required": ["concatable_tables"],
+            "properties": {
+                "concatable_tables": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "required": ["table_index"],
+                        "properties": {
+                            "table_index": {
+                                "type": "ARRAY",
+                                "items": {"type": "NUMBER"},
+                            }
+                        },
+                    },
+                }
+            },
+        },
+        system_instruction=[types.Part.from_text(text=si_text1)],
     )
 
-    input_tokens = client.models.count_tokens(model=model, contents=[si_text1, msg1_text1]).total_tokens
+    input_tokens = client.models.count_tokens(
+        model=model, contents=[si_text1, msg1_text1]
+    ).total_tokens
     response = client.models.generate_content(
-    model = model,
-    contents = contents,
-    config = generate_content_config,
+        model=model,
+        contents=contents,
+        config=generate_content_config,
     )
-    output_tokens = client.models.count_tokens(model=model, contents=response.text).total_tokens
+    output_tokens = client.models.count_tokens(
+        model=model, contents=response.text
+    ).total_tokens
     res_json = response.text
     res_json = json.loads(res_json)
-    res_json.update({"input_tokens": input_tokens, "output_tokens": output_tokens, "model": model})
-    
-    logging.info(f"Model: {model}, Input tokens: {input_tokens}, Output tokens: {output_tokens}")
-    
+    res_json.update(
+        {"input_tokens": input_tokens, "output_tokens": output_tokens, "model": model}
+    )
+
+    logging.info(
+        f"Model: {model}, Input tokens: {input_tokens}, Output tokens: {output_tokens}"
+    )
+
     return res_json
 
 
+if __name__ == "__main__":
+    test_input = """hello world"""
+    res = generate(test_input)
+    print(res)

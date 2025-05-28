@@ -10,21 +10,26 @@ from check_using_api import generate
 
 pd.set_option("future.no_silent_downcasting", True)
 
+
 class ExtractedDataType(TypedDict):
     dataframes: List[pd.DataFrame]
     page_numbers: List[int]
+
 
 def get_pdf_name(source: str) -> str:
     pdf_name = os.path.basename(source)
     file_name_part, file_extension_part = os.path.splitext(pdf_name)
     return file_name_part
 
+
 def preprocess_df(df):
     if df.empty:
         return df
 
     df_processed = df.copy()
-    col_names_with_prefix = [col for col in df_processed.columns if str(col).startswith("Col")]
+    col_names_with_prefix = [
+        col for col in df_processed.columns if str(col).startswith("Col")
+    ]
     for col in col_names_with_prefix:
         if df_processed[col].isnull().all():
             df_processed.drop(col, axis=1, inplace=True)
@@ -40,6 +45,7 @@ def preprocess_df(df):
 
     return df_processed
 
+
 def get_limited_text_before_table(
     page: pymupdf.Page,
     current_table_bbox: pymupdf.Rect,
@@ -47,23 +53,29 @@ def get_limited_text_before_table(
     n_tokens: int,
     search_height_multiplier: float = 2.0,
     min_search_height: int = 30,
-    main_content_max_x_ratio: float = 0.65
+    main_content_max_x_ratio: float = 0.65,
 ) -> str:
     if isinstance(current_table_bbox, tuple):
         if len(current_table_bbox) == 4:
             try:
                 current_table_bbox = pymupdf.Rect(current_table_bbox)
-            except Exception: return ""
-        else: return ""
-    elif not isinstance(current_table_bbox, pymupdf.Rect): return ""
+            except Exception:
+                return ""
+        else:
+            return ""
+    elif not isinstance(current_table_bbox, pymupdf.Rect):
+        return ""
 
-    if not current_table_bbox or current_table_bbox.is_empty: return ""
+    if not current_table_bbox or current_table_bbox.is_empty:
+        return ""
 
     page_width = page.rect.width
     try:
         table_height = current_table_bbox.height
-        if table_height <= 0: table_height = 10
-    except AttributeError: return ""
+        if table_height <= 0:
+            table_height = 10
+    except AttributeError:
+        return ""
 
     search_area_height = max(table_height * search_height_multiplier, min_search_height)
     search_rect_y0 = max(0, current_table_bbox.y0 - 1)
@@ -73,14 +85,17 @@ def get_limited_text_before_table(
         if current_table_bbox.y0 <= min_search_height / 2:
             search_rect_y0 = max(0, current_table_bbox.y0 - 1)
             search_rect_y1 = max(0, search_rect_y0 - (min_search_height / 2))
-            if search_rect_y1 >= search_rect_y0: return ""
+            if search_rect_y1 >= search_rect_y0:
+                return ""
         else:
             search_rect_y1 = max(0, current_table_bbox.y0 - min_search_height)
             search_rect_y0 = max(0, current_table_bbox.y0 - 1)
-            if search_rect_y1 >= search_rect_y0: return ""
+            if search_rect_y1 >= search_rect_y0:
+                return ""
 
     search_rect = pymupdf.Rect(0, search_rect_y1, page_width, search_rect_y0)
-    if search_rect.is_empty or search_rect.height <= 0: return ""
+    if search_rect.is_empty or search_rect.height <= 0:
+        return ""
 
     blocks_in_search_area = page.get_text("blocks", clip=search_rect, sort=True)
     filtered_text_lines = []
@@ -89,26 +104,38 @@ def get_limited_text_before_table(
         if block_data[6] != 0:
             continue
 
-        block_rect = pymupdf.Rect(block_data[0], block_data[1], block_data[2], block_data[3])
+        block_rect = pymupdf.Rect(
+            block_data[0], block_data[1], block_data[2], block_data[3]
+        )
         block_text_content = block_data[4]
 
         is_part_of_a_table = False
         for table_bbox_on_pg in all_table_bboxes_on_page:
-            test_table_rect = pymupdf.Rect(table_bbox_on_pg) if isinstance(table_bbox_on_pg, tuple) else table_bbox_on_pg
+            test_table_rect = (
+                pymupdf.Rect(table_bbox_on_pg)
+                if isinstance(table_bbox_on_pg, tuple)
+                else table_bbox_on_pg
+            )
             if not test_table_rect.is_empty:
                 if not (block_rect.irect & test_table_rect.irect).is_empty:
                     is_part_of_a_table = True
                     break
-        if is_part_of_a_table: continue
+        if is_part_of_a_table:
+            continue
 
         is_horizontally_relevant = False
         effective_table_x0 = current_table_bbox.x0 - (current_table_bbox.width * 0.1)
         effective_table_x1 = current_table_bbox.x1 + (current_table_bbox.width * 0.1)
 
-        if max(block_rect.x0, effective_table_x0) < min(block_rect.x1, effective_table_x1):
+        if max(block_rect.x0, effective_table_x0) < min(
+            block_rect.x1, effective_table_x1
+        ):
             is_horizontally_relevant = True
-        
-        if is_horizontally_relevant and current_table_bbox.x1 < page_width * main_content_max_x_ratio:
+
+        if (
+            is_horizontally_relevant
+            and current_table_bbox.x1 < page_width * main_content_max_x_ratio
+        ):
             if block_rect.x0 >= page_width * (main_content_max_x_ratio - 0.05):
                 is_horizontally_relevant = False
 
@@ -120,11 +147,15 @@ def get_limited_text_before_table(
     text_above = " ".join(filtered_text_lines)
     text_above = " ".join(text_above.split())
 
-    if not text_above: return ""
+    if not text_above:
+        return ""
     tokens = text_above.split()
-    if len(tokens) > n_tokens: limited_text = " ".join(tokens[-n_tokens:])
-    else: limited_text = " ".join(tokens)
+    if len(tokens) > n_tokens:
+        limited_text = " ".join(tokens[-n_tokens:])
+    else:
+        limited_text = " ".join(tokens)
     return limited_text
+
 
 def get_limited_text_from_bottom_of_page(
     page: pymupdf.Page,
@@ -132,47 +163,66 @@ def get_limited_text_from_bottom_of_page(
     n_tokens: int,
     search_height_ratio: float = 0.25,
     min_search_height_from_bottom: int = 50,
-    main_content_max_x_ratio: float = 0.65
+    main_content_max_x_ratio: float = 0.65,
 ) -> str:
-    if n_tokens <= 0: return ""
+    if n_tokens <= 0:
+        return ""
     page_height = page.rect.height
     page_width = page.rect.width
-    search_area_actual_height = max(page_height * search_height_ratio, min_search_height_from_bottom)
+    search_area_actual_height = max(
+        page_height * search_height_ratio, min_search_height_from_bottom
+    )
     search_rect_y1_for_bottom_area = max(0, page_height - search_area_actual_height)
     search_rect_y0_for_bottom_area = page_height
-    if search_rect_y1_for_bottom_area >= search_rect_y0_for_bottom_area: return ""
+    if search_rect_y1_for_bottom_area >= search_rect_y0_for_bottom_area:
+        return ""
 
-    search_rect = pymupdf.Rect(0, search_rect_y1_for_bottom_area, page_width, search_rect_y0_for_bottom_area)
-    if search_rect.is_empty or search_rect.height <= 0: return ""
+    search_rect = pymupdf.Rect(
+        0, search_rect_y1_for_bottom_area, page_width, search_rect_y0_for_bottom_area
+    )
+    if search_rect.is_empty or search_rect.height <= 0:
+        return ""
 
     blocks_in_search_area = page.get_text("blocks", clip=search_rect, sort=True)
     filtered_text_lines = []
 
     for block_data in blocks_in_search_area:
-        if block_data[6] != 0: continue
-        block_rect = pymupdf.Rect(block_data[0], block_data[1], block_data[2], block_data[3])
+        if block_data[6] != 0:
+            continue
+        block_rect = pymupdf.Rect(
+            block_data[0], block_data[1], block_data[2], block_data[3]
+        )
         block_text_content = block_data[4]
         is_part_of_a_table = False
         for table_bbox_on_this_page in all_table_bboxes_on_page:
-            test_table_rect = pymupdf.Rect(table_bbox_on_this_page) if isinstance(table_bbox_on_this_page, tuple) else table_bbox_on_this_page
+            test_table_rect = (
+                pymupdf.Rect(table_bbox_on_this_page)
+                if isinstance(table_bbox_on_this_page, tuple)
+                else table_bbox_on_this_page
+            )
             if not test_table_rect.is_empty:
                 if not (block_rect.irect & test_table_rect.irect).is_empty:
                     is_part_of_a_table = True
                     break
-        if is_part_of_a_table: continue
+        if is_part_of_a_table:
+            continue
 
         if block_rect.x0 < page_width * main_content_max_x_ratio:
             cleaned_block_text = block_text_content.replace("\n", " ").strip()
             if cleaned_block_text:
                 filtered_text_lines.append(cleaned_block_text)
-            
+
     text_from_bottom = " ".join(filtered_text_lines)
     text_from_bottom = " ".join(text_from_bottom.split())
-    if not text_from_bottom: return ""
+    if not text_from_bottom:
+        return ""
     tokens = text_from_bottom.split()
-    if len(tokens) > n_tokens: limited_text = " ".join(tokens[-n_tokens:])
-    else: limited_text = " ".join(tokens)
+    if len(tokens) > n_tokens:
+        limited_text = " ".join(tokens[-n_tokens:])
+    else:
+        limited_text = " ".join(tokens)
     return limited_text
+
 
 def extract_tables_and_contexts(
     doc: pymupdf.Document,
@@ -281,6 +331,7 @@ def extract_tables_and_contexts(
         return default_extracted_data, []
     return extracted_data_output, all_contexts
 
+
 def get_column_types(df: pd.DataFrame) -> List[str]:
     types: List[str] = []
     if df.columns.empty:
@@ -312,6 +363,7 @@ def get_column_types(df: pd.DataFrame) -> List[str]:
             else:
                 types.append("unknown_error_in_logic")
     return types
+
 
 def get_input_df(
     df: pd.DataFrame, n_rows: int = 10, sep: str = "=", max_tokens: int = 15
@@ -349,6 +401,7 @@ def get_input_df(
     markdown_table = final_df_to_sample.to_markdown(index=False, tablefmt="pipe")
     return markdown_table
 
+
 def build_llm_prompt(extracted_data: ExtractedDataType, contexts: List[str]) -> str:
     full_prompt = ""
     dataframes = extracted_data["dataframes"]
@@ -365,11 +418,13 @@ def build_llm_prompt(extracted_data: ExtractedDataType, contexts: List[str]) -> 
         full_prompt += prompt_part
     return full_prompt
 
+
 class ProcessedTableEntry(TypedDict):
     dataframe: pd.DataFrame
     page_numbers: List[int]
     source: str
     associated_contexts: List[str]
+
 
 def solve_non_header_table(df: pd.DataFrame, target_headers: List[str]) -> pd.DataFrame:
     if not isinstance(target_headers, list):
@@ -408,6 +463,7 @@ def solve_non_header_table(df: pd.DataFrame, target_headers: List[str]) -> pd.Da
     df_copy.columns = target_headers
     result_df = pd.concat([new_first_row_df, df_copy], ignore_index=True)
     return result_df.reset_index(drop=True)
+
 
 def main_concatenation_logic(
     extracted_data: ExtractedDataType,
@@ -539,10 +595,12 @@ def main_concatenation_logic(
 
     return processed_tables_result
 
+
 def get_table_content_from_file(file_path: str) -> Tuple[ExtractedDataType, List[str]]:
     doc = pymupdf.open(file_path)
     extracted_data, contexts = extract_tables_and_contexts(doc)
     return extracted_data, contexts
+
 
 def process_pdf_file_from_extracted_data(
     extracted_data: ExtractedDataType,
@@ -570,6 +628,7 @@ def process_pdf_file_from_extracted_data(
                 table_entry["dataframe"] = "Error: DataFrame not available"
 
     return processed_tables_result
+
 
 def process_pdf_file(
     file_paths: Union[str, List[str]],
@@ -632,6 +691,7 @@ def process_pdf_file(
 
     return final_processed_tables_result
 
+
 def get_table_content(
     processed_tables_with_pages: List[ProcessedTableEntry],
 ) -> Dict[str, List[Dict[str, Any]]]:
@@ -656,7 +716,9 @@ def get_table_content(
         if len(page_numbers) > 1:
             markdown_str += f"Cross-page table spanning pages: {page_numbers}\n"
         else:
-            markdown_str += f"This is a single-page table. Page number: {page_numbers[0]}\n\n"
+            markdown_str += (
+                f"This is a single-page table. Page number: {page_numbers[0]}\n\n"
+            )
 
         markdown_str += table.to_markdown(index=False)
         table_shape = table.shape
@@ -708,19 +770,23 @@ def get_table_content(
 
     return results
 
-def full_pipeline(source_path: Union[str, List[str]], verbose: Literal[0, 1, 2] = 0) -> List[ProcessedTableEntry]:
+
+def full_pipeline(
+    source_path: Union[str, List[str]], verbose: Literal[0, 1, 2] = 0
+) -> List[ProcessedTableEntry]:
     if isinstance(source_path, str):
         source_path = [source_path]
-    
-    final_processed_tables_result = process_pdf_file(file_paths=source_path, verbose=verbose)
+
+    final_processed_tables_result = process_pdf_file(
+        file_paths=source_path, verbose=verbose
+    )
     table_content = get_table_content(final_processed_tables_result)
     return table_content
 
-if __name__ == "__main__":
 
+if __name__ == "__main__":
     #### Định nghĩa source path, có thể là folder hoặc file pdf
-    source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/notebooks/cross_page_tables/ccc3348504535e22aa44231e57052869 (1).pdf" # hoặc là [os.listdir(source_path)]
+    source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/notebooks/cross_page_tables/ccc3348504535e22aa44231e57052869 (1).pdf"  # hoặc là [os.listdir(source_path)]
 
     json_result = full_pipeline(source_path=source_path, verbose=1)
     # print(json_result)
-
