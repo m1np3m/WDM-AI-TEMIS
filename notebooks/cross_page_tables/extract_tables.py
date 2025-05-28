@@ -707,3 +707,20 @@ def get_table_content(
             results[source_pdf_name].append(result_item)
 
     return results
+
+def full_pipeline(source_path: Union[str, List[str]], verbose: Literal[0, 1, 2] = 0) -> List[ProcessedTableEntry]:
+    if isinstance(source_path, str):
+        source_path = [source_path]
+    
+    final_processed_tables_result = process_pdf_file(file_paths=source_path, verbose=verbose)
+    table_content = get_table_content(final_processed_tables_result)
+    return table_content
+
+if __name__ == "__main__":
+
+    #### Định nghĩa source path, có thể là folder hoặc file pdf
+    source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/notebooks/cross_page_tables/ccc3348504535e22aa44231e57052869 (1).pdf" # hoặc là [os.listdir(source_path)]
+
+    json_result = full_pipeline(source_path=source_path, verbose=1)
+    # print(json_result)
+
