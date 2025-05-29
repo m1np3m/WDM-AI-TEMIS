@@ -536,7 +536,7 @@ def main_concatenation_logic(
                     processed_dfs_for_group.append(processed_df)
                 else:
                     logging.warning(
-                        f"Item at index used for group is not a DataFrame, skipping."
+                        "Item at index used for group is not a DataFrame, skipping."
                     )
 
             if processed_dfs_for_group:
@@ -595,18 +595,96 @@ def main_concatenation_logic(
 
     return processed_tables_result
 
+def table_to_markdown(
+        table: pd.DataFrame,
+        name: str,
+        page_numbers: List[int],
+        associated_contexts: List[str],
+    ) -> str:
+        markdown_str = f"# {name}\n"
 
-def get_table_content_from_file(file_path: str) -> Tuple[ExtractedDataType, List[str]]:
-    doc = pymupdf.open(file_path)
+        if associated_contexts:
+            filtered_contexts = [
+                ctx for ctx in associated_contexts if ctx and ctx.strip()
+            ]
+            if filtered_contexts:
+                markdown_str += "## Associated Context(s) Before Table:\n"
+                for ctx_item in filtered_contexts:
+                    markdown_str += f"- {ctx_item}\n"
+                markdown_str += "\n"
+
+        if len(page_numbers) > 1:
+            markdown_str += f"Cross-page table spanning pages: {page_numbers}\n"
+        else:
+            markdown_str += (
+                f"This is a single-page table. Page number: {page_numbers[0]}\n\n"
+            )
+
+        markdown_str += table.to_markdown(index=False)
+        table_shape = table.shape
+        markdown_str += f"\n\nShape: {table_shape}\n"
+        return markdown_str
+    
+    
+def get_table_fragments_from_file(
+    source_path: str, return_json: bool = False
+) -> Union[Tuple[ExtractedDataType, List[str]], Dict[str, List[Dict[str, Any]]]]:
+    doc = pymupdf.open(source_path)
+    # Extract table fragments and their contexts from PDF
+    # ExtractedDataType = {"dataframes": List[pd.DataFrame], "page_numbers": List[int]}
     extracted_data, contexts = extract_tables_and_contexts(doc)
-    return extracted_data, contexts
+
+    if return_json:
+        source_pdf_name = get_pdf_name(source_path)
+        
+        json_output: Dict[str, List[Dict[str, Any]]] = {source_pdf_name: []}
+
+        table_fragments_dfs = extracted_data["dataframes"]
+        fragment_scalar_page_numbers = extracted_data["page_numbers"]
+
+        for idx, table_df_fragment_original in enumerate(table_fragments_dfs):
+            
+            if not isinstance(table_df_fragment_original, pd.DataFrame):
+                continue
+
+            table_df_fragment = table_df_fragment_original.fillna("")
+
+            current_fragment_page_num_scalar = -1 
+            if idx < len(fragment_scalar_page_numbers):
+                current_fragment_page_num_scalar = fragment_scalar_page_numbers[idx]
+            
+            current_fragment_page_numbers_as_list = [current_fragment_page_num_scalar]
+
+            current_fragment_context_str = contexts[idx] if idx < len(contexts) else ""
+            associated_contexts_for_markdown = [current_fragment_context_str]
+
+            fragment_name = f"{source_pdf_name}_fragment_{idx}"
+
+            markdown_str = table_to_markdown(
+                table_df_fragment,
+                fragment_name,
+                current_fragment_page_numbers_as_list,
+                associated_contexts_for_markdown,
+            )
+
+            result_item = {
+                "table_content": markdown_str,
+                "page_numbers": current_fragment_page_numbers_as_list,
+                "source": source_pdf_name,
+                "table_idx": idx,
+                "associated_contexts": associated_contexts_for_markdown,
+            }
+            json_output[source_pdf_name].append(result_item)
+        
+        return json_output
+    else:
+        return extracted_data, contexts
 
 
 def process_pdf_file_from_extracted_data(
     extracted_data: ExtractedDataType,
     contexts: List[str],
     return_type: Literal["dataframe", "markdown"] = "dataframe",
-    verbose: bool = False,
     source_name: str = "testing",
 ) -> List[ProcessedTableEntry]:
     llm_prompt = build_llm_prompt(extracted_data, contexts)
@@ -648,7 +726,7 @@ def process_pdf_file(
         if verbose >= 1:
             print(f"Processing file: {get_pdf_name(file_path)}...")
 
-        extracted_data, contexts = get_table_content_from_file(file_path)
+        extracted_data, contexts = get_table_fragments_from_file(file_path)
 
         llm_prompt = build_llm_prompt(extracted_data, contexts)
         if verbose >= 2:
@@ -695,35 +773,6 @@ def process_pdf_file(
 def get_table_content(
     processed_tables_with_pages: List[ProcessedTableEntry],
 ) -> Dict[str, List[Dict[str, Any]]]:
-    def table_to_markdown(
-        table: pd.DataFrame,
-        name: str,
-        page_numbers: List[int],
-        associated_contexts: List[str],
-    ) -> str:
-        markdown_str = f"# {name}\n"
-
-        if associated_contexts:
-            filtered_contexts = [
-                ctx for ctx in associated_contexts if ctx and ctx.strip()
-            ]
-            if filtered_contexts:
-                markdown_str += "## Associated Context(s) Before Table:\n"
-                for ctx_item in filtered_contexts:
-                    markdown_str += f"- {ctx_item}\n"
-                markdown_str += "\n"
-
-        if len(page_numbers) > 1:
-            markdown_str += f"Cross-page table spanning pages: {page_numbers}\n"
-        else:
-            markdown_str += (
-                f"This is a single-page table. Page number: {page_numbers[0]}\n\n"
-            )
-
-        markdown_str += table.to_markdown(index=False)
-        table_shape = table.shape
-        markdown_str += f"\n\nShape: {table_shape}\n"
-        return markdown_str
 
     results: Dict[str, List[Dict[str, Any]]] = {}
     sources_ = set(table["source"] for table in processed_tables_with_pages)
@@ -788,5 +837,9 @@ if __name__ == "__main__":
     #### Định nghĩa source path, có thể là folder hoặc file pdf
     source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/notebooks/cross_page_tables/ccc3348504535e22aa44231e57052869 (1).pdf"  # hoặc là [os.listdir(source_path)]
 
-    json_result = full_pipeline(source_path=source_path, verbose=1)
+    ### CODE NÀY CHỈ LẤY RA CÁC TABLE FRAGMENTS CÓ CẤU TRÚC NHƯ Logic 666
+    json_result = get_table_fragments_from_file(source_path=source_path, return_json=True) # NHỚ RẰNG `return_json=True`
+    print(json_result)
+    ### CODE NÀY LÀ CHẠY FULL PIPELINE, RA LUÔN TABLE FULL -> logic 666
+    # json_result = full_pipeline(source_path=source_path, verbose=1)
     # print(json_result)
