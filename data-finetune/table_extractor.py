@@ -17,7 +17,7 @@ from loguru import logger
 
 # --- Configuration ---
 # Directory to save cropped table images
-CROPPED_TABLES_OUTPUT_DIR = "/home/tiamo/WDM-AI-TEMIS/data-finetune/cropped_tables_output"
+CROPPED_TABLES_OUTPUT_DIR = "C:/Users/PC/CODE/WDM-AI-TEMIS/output_img/0aed309e29e45111f67fb85aea1fcb5e"
 # DPI for PDF to image conversion
 PDF_DPI = 200 # Increased DPI for better quality if needed, original notebook used 144 for get_images_from_pdf
 # Detection model parameters
@@ -246,7 +246,7 @@ if __name__ == "__main__":
         from reportlab.pdfgen import canvas
         from reportlab.lib.pagesizes import letter
         
-        PDF_PATH = "/home/tiamo/WDM-AI-TEMIS/data-finetune/pdf4tabel/0c1cec5ca5a6fb780a9cfa24d99132b1.pdf"
+        PDF_PATH = "C:/Users/PC/CODE/WDM-AI-TEMIS/data-finetune/pdf4tabel/0aed309e29e45111f67fb85aea1fcb5e.pdf"
 
         # def create_dummy_pdf(filename=PDF_PATH, num_pages=5):
         #     if os.path.exists(filename):
@@ -267,7 +267,7 @@ if __name__ == "__main__":
         
         # create_dummy_pdf()
         pdf_to_process = PDF_PATH
-        pages_to_process = [6] # Process pages 1, 2, and 3 (1-based)
+        pages_to_process = [1, 2, 3] # Process pages 1, 2, and 3 (1-based)
 
     except ImportError:
         logger.warning("ReportLab not installed. Skipping dummy PDF creation.")
