@@ -246,7 +246,11 @@ if __name__ == "__main__":
         from reportlab.pdfgen import canvas
         from reportlab.lib.pagesizes import letter
         
+<<<<<<< HEAD
         PDF_PATH = "C:/Users/Admin/Data/WDM-AI-TEMIS/data-finetune/pdf4tabel/0f2e91196bed7af39daccd67edea21c3.pdf"
+=======
+        PDF_PATH = "C:/Users/PC/CODE/WDM-AI-TEMIS/data-finetune/pdf4tabel/0aed309e29e45111f67fb85aea1fcb5e.pdf"
+>>>>>>> master
 
         # def create_dummy_pdf(filename=PDF_PATH, num_pages=5):
         #     if os.path.exists(filename):
