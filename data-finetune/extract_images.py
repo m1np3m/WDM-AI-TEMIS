@@ -4,9 +4,9 @@ import shutil
 from pathlib import Path
 
 # --- Cấu hình ---
-JSON_FILE_PATH = '/home/tiamo/WDM-AI-TEMIS/data-finetune/result_vy.json'
+JSON_FILE_PATH = '/home/tiamo/WDM-AI-TEMIS/data-finetune/final.json'
 SOURCE_FOLDER = '/home/tiamo/WDM-AI-TEMIS/data-finetune/cropped_tables_output'
-DESTINATION_FOLDER = '/home/tiamo/WDM-AI-TEMIS/data-finetune/vinhtran_result'
+DESTINATION_FOLDER = '/home/tiamo/WDM-AI-TEMIS/data-finetune/extracted_images'
 
 def copy_images_from_json(json_file_path, source_folder, destination_folder):
     """
