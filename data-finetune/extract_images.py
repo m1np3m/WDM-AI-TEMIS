@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 
 # --- Cấu hình ---
-JSON_FILE_PATH = '/home/tiamo/WDM-AI-TEMIS/data-finetune/result_thangquang.json'
+JSON_FILE_PATH = '/home/tiamo/WDM-AI-TEMIS/data-finetune/result_vy.json'
 SOURCE_FOLDER = '/home/tiamo/WDM-AI-TEMIS/data-finetune/cropped_tables_output'
 DESTINATION_FOLDER = '/home/tiamo/WDM-AI-TEMIS/data-finetune/vinhtran_result'
 
