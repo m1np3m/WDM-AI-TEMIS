@@ -17,7 +17,7 @@ from loguru import logger
 
 # --- Configuration ---
 # Directory to save cropped table images
-CROPPED_TABLES_OUTPUT_DIR = "C:/Users/PC/CODE/WDM-AI-TEMIS/output_img/0aed309e29e45111f67fb85aea1fcb5e"
+CROPPED_TABLES_OUTPUT_DIR = "C:/Users/Admin/Data/WDM-AI-TEMIS/data-finetune/cropped_tables_output/0f2e91196bed7af39daccd67edea21c3"
 # DPI for PDF to image conversion
 PDF_DPI = 200 # Increased DPI for better quality if needed, original notebook used 144 for get_images_from_pdf
 # Detection model parameters
@@ -246,7 +246,11 @@ if __name__ == "__main__":
         from reportlab.pdfgen import canvas
         from reportlab.lib.pagesizes import letter
         
+<<<<<<< HEAD
+        PDF_PATH = "C:/Users/Admin/Data/WDM-AI-TEMIS/data-finetune/pdf4tabel/0f2e91196bed7af39daccd67edea21c3.pdf"
+=======
         PDF_PATH = "C:/Users/PC/CODE/WDM-AI-TEMIS/data-finetune/pdf4tabel/0aed309e29e45111f67fb85aea1fcb5e.pdf"
+>>>>>>> master
 
         # def create_dummy_pdf(filename=PDF_PATH, num_pages=5):
         #     if os.path.exists(filename):
