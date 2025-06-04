@@ -1,15 +1,21 @@
 import pandas as pd
 from datasets import Dataset
+from ragas.evaluation import Dataset
 from ragas.evaluation import evaluate
 from ragas.metrics import (
     faithfulness,
     answer_relevancy,
+    answer_similarity,
     context_precision,
     context_recall,
+    BleuScore,
+    RougeScore,
+
 )
 import requests
 import json
 import matplotlib.pyplot as plt
+from .rag_metrics import *
 def generate_model_output(user_query, documents):
     """
     Gửi prompt đến Ollama và nhận về một đoạn phản hồi hoàn chỉnh.
@@ -85,13 +91,18 @@ def run_ragas_eval(
         metrics=[
             faithfulness,
             answer_relevancy,
+            answer_similarity,
             context_precision,
             context_recall,
+            BleuScore(),
+            RougeScore(),
         ]
     )
 
     df_results = results.to_pandas()
     df_results.to_csv(path, index=False)
+    df_results['hit_rate'] = calculate_hit_rate(eval_df)
+    df_results['mrr'] = calculate_mrr(eval_df)
 
     print("Evaluation completed. Results saved to", path)
     return df_results
@@ -112,9 +123,26 @@ def plot_experiment_comparison(experiment_results_list, experiment_names, metric
         stats.append([name] + means)
 
     stats_df = pd.DataFrame(stats, columns=['Experiment'] + metrics_to_plot)
-    stats_df = stats_df.set_index('Experiment').T  # transpose cho metric là index, experiment là cột
+    stats_df = stats_df.set_index('Experiment').T 
+    standard_metrics = ['faithfulness', 'answer_relevancy', 'context_precision', 'context_recall',
+                        'context_relevancy', 'answer_similarity', 'answer_correctness']
+    
+    special_metrics = {
+        'hit_rate': 'Hit Rate',
+        'mrr': 'MRR'
+    }
+    has_special_metric = any(metric in special_metrics for metric in metrics_to_plot)
+    is_all_standard = all(metric in standard_metrics for metric in metrics_to_plot)
 
-    # Vẽ biểu đồ
+    if has_special_metric and not is_all_standard:
+        title = "Comparison of Retrieval & RAG Metrics"
+        ylabel = "Score / Value"
+        ylim = None  # Không giới hạn nếu có metric mở rộng
+    else:
+        title = "Comparison of RAGAS Evaluation Metrics"
+        ylabel = "Average Score"
+        ylim = (0, 1)
+
     ax = stats_df.plot(
         kind='bar',
         figsize=(10, 6),

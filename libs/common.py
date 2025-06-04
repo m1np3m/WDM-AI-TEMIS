@@ -3,6 +3,7 @@ import requests
 import json
 from dotenv import load_dotenv, find_dotenv
 import os
+import json
 
 import pandas as pd
 import qdrant_client
@@ -13,3 +14,5 @@ import tqdm.notebook as tqdm
 from dotenv import load_dotenv
 from datasets import load_dataset
 from langchain.prompts import PromptTemplate
+import random
+import base64
