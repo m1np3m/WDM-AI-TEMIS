@@ -1,10 +1,13 @@
 import os
 import re
+from io import StringIO
 from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union
 
+import pandas as pd
 import pymupdf  # PyMuPDF
 import pymupdf4llm
 from loguru import logger
+from markdown import markdown
 from tqdm import tqdm
 
 from utils import get_is_has_header, get_is_new_section_context
@@ -20,6 +23,17 @@ class Table(TypedDict):
     context_before: str
     is_new_section_context: bool
     is_has_header: bool
+
+
+class MergedTable(TypedDict):
+    text: str
+    page: List[int]
+    source: str
+    bbox: List[Tuple[float, float, float, float]]
+    headers: List[str]  # Textual headers
+    n_rows: int  # Sum of n_rows from original tables in the group
+    n_columns: int  # Max n_columns from original tables, text padded to this
+    context_before: str
 
 
 def get_pdf_name(source: str) -> str:
@@ -401,6 +415,59 @@ def get_context_before_table(
     return final_result_text.strip()
 
 
+def convert_markdown_to_df(markdown_text: str) -> pd.DataFrame:
+    html_table = markdown(markdown_text, extensions=["markdown.extensions.tables"])
+    dfs = pd.read_html(StringIO(f"<table>{html_table}</table>"))
+    if dfs:
+        df = dfs[0]
+    else:
+        print("Không tìm thấy bảng nào.")
+    return df
+
+
+def fix_merged_row(df_col1, df_col2) -> pd.Series:
+    def find_consecutive_true_indices(series):
+        consecutive_groups = []
+        current_streak = []
+
+        for i, value in enumerate(series):
+            if value:
+                current_streak.append(i)
+            else:
+                if len(current_streak) >= 2:
+                    consecutive_groups.append(current_streak)
+                current_streak = []
+
+        if len(current_streak) >= 2:
+            consecutive_groups.append(current_streak)
+
+        return consecutive_groups
+
+    consecutive_true_indices = find_consecutive_true_indices(df_col1 == df_col2)
+    if consecutive_true_indices:
+        for group in consecutive_true_indices:
+            if group and len(group) > 1 and group[0] - 1 >= 0:
+                replace_value = df_col2.iloc[group[0] - 1]
+                df_col2.iloc[group] = replace_value
+    return df_col2
+
+
+def fix_merged_row_df(df: pd.DataFrame) -> pd.DataFrame:
+    test_df = df.copy()
+
+    n_cols = test_df.shape[1]
+    processed_cols = []
+    for i in range(1, n_cols - 1):
+        col1 = test_df.iloc[:, i]
+        col2 = test_df.iloc[:, i + 1]
+        processed_cols.append(fix_merged_row(col1, col2))
+
+    for i in range(2, n_cols):
+        test_df.iloc[:, i] = processed_cols[i - 2]
+
+    return test_df
+
+
 def get_tables_from_pdf(
     doc=Union[str, pymupdf.Document],
     image_path: str = "images",
@@ -467,6 +534,7 @@ def get_tables_from_pdf(
         table["is_has_header"] = is_has
     return total_tables
 
+
 def get_tables_from_pdf_2(
     doc: Union[str, pymupdf.Document],
     pages: List[int] = None,
@@ -474,11 +542,11 @@ def get_tables_from_pdf_2(
     if isinstance(doc, str):
         doc = pymupdf.open(doc)
     total_tables = []
-    
+
     source = get_pdf_name(doc.name)
     if pages is None:
         pages = list(range(1, doc.page_count + 1))
-    
+
     for page in tqdm(pages, desc="Processing pages"):
         page_idx = page - 1
         page = doc.load_page(page_idx)
@@ -489,7 +557,7 @@ def get_tables_from_pdf_2(
                 n_rows = table.row_count
                 n_columns = table.col_count
                 text = table.to_markdown()
-                
+
                 target_table_page_0_indexed = page_idx
                 actual_prev_page_0_indexed = target_table_page_0_indexed - 1
                 filtered_prev_page_table_bboxes = []
@@ -504,7 +572,7 @@ def get_tables_from_pdf_2(
                     table_bbox=bbox,
                     prev_page_all_table_bboxes=filtered_prev_page_table_bboxes,
                 )
-                
+
                 table_obj = {
                     "text": text,
                     "page": page_idx + 1,
@@ -516,15 +584,19 @@ def get_tables_from_pdf_2(
                     "is_new_section_context": False,
                 }
                 total_tables.append(table_obj)
-    
-    contexts = [(i, table['context_before']) for i, table in enumerate(total_tables) if table['context_before'] != ""]
+
+    contexts = [
+        (i, table["context_before"])
+        for i, table in enumerate(total_tables)
+        if table["context_before"] != ""
+    ]
     # print("Contexts:", "\n".join(context for _, context in contexts))
     res = get_is_new_section_context([context for _, context in contexts])
     # print(len(contexts))
     # print(len(res['is_new_section_context']))
-    for (i, _), is_new in zip(contexts, res['is_new_section_context']):
-        total_tables[i]['is_new_section_context'] = is_new
-        
+    for (i, _), is_new in zip(contexts, res["is_new_section_context"]):
+        total_tables[i]["is_new_section_context"] = is_new
+
     headers = [get_headers_from_markdown(table["text"]) for table in total_tables]
     res = get_is_has_header(headers)
     # print(len(headers))
@@ -533,7 +605,10 @@ def get_tables_from_pdf_2(
         table["is_has_header"] = is_has
     return total_tables
 
-def find_spanned_table_groups(tables: List[Table], debug: bool = False) -> List[List[Table]]:
+
+def find_spanned_table_groups(
+    tables: List[Table], debug: bool = False
+) -> List[List[Table]]:
     """
     Identifies groups of tables that span across multiple pages from a list of tables.
 
@@ -560,10 +635,12 @@ def find_spanned_table_groups(tables: List[Table], debug: bool = False) -> List[
     # Sort tables by page and then by vertical position (top of bbox y0).
     # Assuming bbox is (x0, y0, x1, y1) where y0 is the top coordinate.
     # This is crucial for correctly identifying sequential tables in the document.
-    sorted_tables = sorted(tables, key=lambda t: (t['page'], t['bbox'][1]))
+    sorted_tables = sorted(tables, key=lambda t: (t["page"], t["bbox"][1]))
 
     if debug and sorted_tables:
-        logger.debug(f"Tables sorted. First table on page: {sorted_tables[0]['page']}, Last table on page: {sorted_tables[-1]['page']}")
+        logger.debug(
+            f"Tables sorted. First table on page: {sorted_tables[0]['page']}, Last table on page: {sorted_tables[-1]['page']}"
+        )
 
     table_groups: List[List[Table]] = []
     # Initialize the first group with the first table.
@@ -571,12 +648,20 @@ def find_spanned_table_groups(tables: List[Table], debug: bool = False) -> List[
 
     # Determine if tqdm should be used: for a meaningful number of tables and not in debug mode.
     # tqdm is disabled in debug mode to prevent progress bar output from cluttering detailed logs.
-    should_use_tqdm = len(sorted_tables) > 10 # Arbitrary threshold: use tqdm for more than 10 tables
-    
+    should_use_tqdm = (
+        len(sorted_tables) > 10
+    )  # Arbitrary threshold: use tqdm for more than 10 tables
+
     # The loop iterates from the second table.
     loop_iterator = range(1, len(sorted_tables))
     if should_use_tqdm:
-        loop_iterator = tqdm(loop_iterator, desc="Processing tables for spanning", unit="table", ncols=100, disable=debug)
+        loop_iterator = tqdm(
+            loop_iterator,
+            desc="Processing tables for spanning",
+            unit="table",
+            ncols=100,
+            disable=debug,
+        )
 
     for i in loop_iterator:
         t_current = sorted_tables[i]
@@ -584,41 +669,53 @@ def find_spanned_table_groups(tables: List[Table], debug: bool = False) -> List[
         last_table_in_current_group = current_group[-1]
 
         if debug:
-            logger.debug(f"--- Iteration for table index {i} (Page {t_current['page']}) ---")
-            logger.debug(f"T_current: Page {t_current['page']}, HasHeader: {t_current['is_has_header']}, "
-                         f"NewSectionCtx: {t_current['is_new_section_context']}, "
-                         f"CtxBefore: '{t_current['context_before'][:30].strip()}...'")
-            logger.debug(f"Comparing with T_prev_in_group: Page {last_table_in_current_group['page']}")
+            logger.debug(
+                f"--- Iteration for table index {i} (Page {t_current['page']}) ---"
+            )
+            logger.debug(
+                f"T_current: Page {t_current['page']}, HasHeader: {t_current['is_has_header']}, "
+                f"NewSectionCtx: {t_current['is_new_section_context']}, "
+                f"CtxBefore: '{t_current['context_before'][:30].strip()}...'"
+            )
+            logger.debug(
+                f"Comparing with T_prev_in_group: Page {last_table_in_current_group['page']}"
+            )
 
         # Pre-condition for span: T_current must be on the page immediately following T_prev_in_group.
-        is_on_next_page = (t_current['page'] == last_table_in_current_group['page'] + 1)
+        is_on_next_page = t_current["page"] == last_table_in_current_group["page"] + 1
 
         if not is_on_next_page:
             if debug:
-                logger.debug(f"NOT A SPAN: T_current (Page {t_current['page']}) is not on the next page "
-                             f"after T_prev_in_group (Page {last_table_in_current_group['page']}). Finalizing current group.")
+                logger.debug(
+                    f"NOT A SPAN: T_current (Page {t_current['page']}) is not on the next page "
+                    f"after T_prev_in_group (Page {last_table_in_current_group['page']}). Finalizing current group."
+                )
             table_groups.append(list(current_group))  # Finalize current_group
-            current_group = [t_current]               # Start a new group with t_current
+            current_group = [t_current]  # Start a new group with t_current
             continue
 
         # At this point, is_on_next_page is True.
 
         # Case: New Table if T_current is marked by a new section context.
         # This condition has high precedence.
-        if t_current['is_new_section_context']:
+        if t_current["is_new_section_context"]:
             if debug:
-                logger.debug(f"NOT A SPAN: T_current (Page {t_current['page']}) has 'is_new_section_context' == True. "
-                             "Finalizing current group.")
+                logger.debug(
+                    f"NOT A SPAN: T_current (Page {t_current['page']}) has 'is_new_section_context' == True. "
+                    "Finalizing current group."
+                )
             table_groups.append(list(current_group))
             current_group = [t_current]
             continue
 
         # Case: New Table if T_current has its own header (and not a new section context).
         # A table with its own significant header is usually independent.
-        if t_current['is_has_header']:
+        if t_current["is_has_header"]:
             if debug:
-                logger.debug(f"NOT A SPAN: T_current (Page {t_current['page']}) has 'is_has_header' == True. "
-                             "Finalizing current group.")
+                logger.debug(
+                    f"NOT A SPAN: T_current (Page {t_current['page']}) has 'is_has_header' == True. "
+                    "Finalizing current group."
+                )
             table_groups.append(list(current_group))
             current_group = [t_current]
             continue
@@ -630,15 +727,19 @@ def find_spanned_table_groups(tables: List[Table], debug: bool = False) -> List[
         # The nature of 'context_before' differentiates clear vs. noisy span.
 
         # Case 1: Classic Span (context_before is empty).
-        if not t_current['context_before']:  # context_before is empty or None
+        if not t_current["context_before"]:  # context_before is empty or None
             if debug:
-                logger.debug(f"IS A SPAN (Classic): T_current (Page {t_current['page']}) meets span criteria, "
-                             "and 'context_before' is empty. Adding to current group.")
+                logger.debug(
+                    f"IS A SPAN (Classic): T_current (Page {t_current['page']}) meets span criteria, "
+                    "and 'context_before' is empty. Adding to current group."
+                )
             current_group.append(t_current)
         else:  # Case 2: Span with "Noise" Context (context_before is not empty but not a new section marker).
             if debug:
-                logger.debug(f"IS A SPAN (Noisy Context): T_current (Page {t_current['page']}) meets span criteria, "
-                             "and 'context_before' is present (considered noise). Adding to current group.")
+                logger.debug(
+                    f"IS A SPAN (Noisy Context): T_current (Page {t_current['page']}) meets span criteria, "
+                    "and 'context_before' is present (considered noise). Adding to current group."
+                )
             current_group.append(t_current)
             # Note: The problem description mentioned an optional further check for column compatibility here.
             # e.g., t_current['n_columns'] == last_table_in_current_group['n_columns'].
@@ -647,15 +748,17 @@ def find_spanned_table_groups(tables: List[Table], debug: bool = False) -> List[
 
     # Add the last processed group to table_groups.
     # This ensures the group being built is added, especially if the loop finishes.
-    if current_group: 
+    if current_group:
         table_groups.append(list(current_group))
 
     if debug:
-        logger.debug(f"Finished finding spanned table groups. Total groups found: {len(table_groups)}.")
+        logger.debug(
+            f"Finished finding spanned table groups. Total groups found: {len(table_groups)}."
+        )
         for i, group in enumerate(table_groups):
-            group_pages = [t['page'] for t in group]
-            logger.debug(f"Group {i+1}: Contains {len(group)} table segment(s) on page(s): {group_pages}")
-            
-
+            group_pages = [t["page"] for t in group]
+            logger.debug(
+                f"Group {i + 1}: Contains {len(group)} table segment(s) on page(s): {group_pages}"
+            )
 
     return table_groups
