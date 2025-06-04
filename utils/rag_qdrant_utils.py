@@ -4,10 +4,9 @@ from langchain.docstore.document import Document as LangchainDocument
 import os
 import json
 import fitz  
-data_dir = os.getenv("DATA_DIR", "data")
-def summarize_table():
+def summarize_table(folder_path):
     summary_documents = []
-    tables_sources = json.load(open(f"{data_dir}/pdf/final_tables.json"))
+    tables_sources = json.load(open(f"{folder_path}/final_tables.json", 'r', encoding='utf-8'))
     sources = list(tables_sources.keys())
     for source in sources:
         for table in tables_sources[source]:
@@ -58,7 +57,7 @@ def process_all_pdfs_in_folder(folder_path):
             print(f"\n>>> Đang xử lý: {pdf_path}")
             page_docs = get_detail_chunks(pdf_path)
             all_page_documents.extend(page_docs)
-            table_docs = summarize_table()
+            table_docs = summarize_table(folder_path)
             all_table_documents.extend(table_docs)
 
     return all_page_documents, all_table_documents
