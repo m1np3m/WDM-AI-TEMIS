@@ -3,6 +3,8 @@ import re
 from io import StringIO
 from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union
 import numpy as np
+from multiprocessing import Pool, cpu_count
+from functools import partial
 
 import pandas as pd
 import pymupdf  # PyMuPDF
@@ -481,10 +483,14 @@ def fix_merged_row(df_col1, df_col2) -> pd.Series:
 
         return consecutive_groups
 
+    # Create a copy of df_col2 to avoid SettingWithCopyWarning
+    result = df_col2.copy()
+    
     for group in find_consecutive_true_indices(df_col1 == df_col2):
         if group[0] > 0:
-            df_col2.iloc[group] = df_col2.iloc[group[0] - 1]
-    return df_col2
+            # Use loc instead of iloc for explicit indexing
+            result.loc[group] = result.iloc[group[0] - 1]
+    return result
 
 def fix_merged_row_df(df: pd.DataFrame) -> pd.DataFrame:
     test_df = df.copy()
@@ -496,111 +502,31 @@ def fix_merged_row_df(df: pd.DataFrame) -> pd.DataFrame:
     return test_df
 
 
-def get_tables_from_pdf(
-    doc=Union[str, pymupdf.Document],
-    image_path: str = "images",
-    write_images: bool = False,
-    pages: List[int] = None,
-) -> List[Table]:
-    if isinstance(doc, str):
-        doc = pymupdf.open(doc)
-    md_text = pymupdf4llm.to_markdown(
-        doc=doc, image_path=image_path, page_chunks=True, write_images=write_images
-    )
-
-    total_tables: List[Table] = []
-
-    for page in md_text:
-        metadata = page["metadata"]
-        page_idx = metadata["page"]
-        source = get_pdf_name(metadata["file_path"])
-        tables_metadata = page["tables"]
-        tables_text = split_markdown_into_tables(page["text"])
-        for table_metadata, table_text in zip(tables_metadata, tables_text):
-            bbox = table_metadata["bbox"]
-            n_rows = table_metadata["rows"]
-            n_columns = table_metadata["columns"]
-            # find context before
-            target_table_page_0_indexed = page_idx - 1
-            actual_prev_page_0_indexed = target_table_page_0_indexed - 1
-            filtered_prev_page_table_bboxes = []
-            if actual_prev_page_0_indexed >= 0:
-                for t_prev in total_tables:
-                    if (
-                        t_prev["page"] - 1 == actual_prev_page_0_indexed
-                    ):  # So sánh trang 0-indexed
-                        filtered_prev_page_table_bboxes.append(t_prev["bbox"])
-
-            context = get_context_before_table(
-                doc=doc,
-                table_page_num_0_indexed=target_table_page_0_indexed,
-                table_bbox=bbox,
-                prev_page_all_table_bboxes=filtered_prev_page_table_bboxes,
-                # debug=True
-            )
-
-            table: Table = {
-                "text": table_text,
-                "page": page_idx,
-                "source": source,
-                "n_rows": n_rows,
-                "n_columns": n_columns,
-                "bbox": bbox,
-                "context_before": context,
-            }
-            total_tables.append(table)
-    # thêm is_new_section_context
-    contexts = [table["context_before"] for table in total_tables]
-    res = get_is_new_section_context(contexts)
-    for table, is_new in zip(total_tables, res["is_new_section_context"]):
-        table["is_new_section_context"] = is_new
-
-    # thêm is_has_header
-    headers = [get_headers_from_markdown(table["text"]) for table in total_tables]
-    res = get_is_has_header(headers)
-    for table, is_has in zip(total_tables, res["is_has_header"]):
-        table["is_has_header"] = is_has
-    return total_tables
-
-
-def get_tables_from_pdf_2(
-    doc: Union[str, pymupdf.Document],
-    pages: List[int] = None,
-) -> List[Table]:
-    if isinstance(doc, str):
-        doc = pymupdf.open(doc)
-    total_tables = []
-
-    source = get_pdf_name(doc.name)
-    if pages is None:
-        pages = list(range(1, doc.page_count + 1))
-
-    for page in tqdm(pages, desc="Processing pages"):
-        page_idx = page - 1
+def process_single_page(page_info: Tuple[int, str, str]) -> List[Dict]:
+    """
+    Process a single page of the PDF document to extract tables.
+    
+    Args:
+        page_info: Tuple containing (page_idx, pdf_path, source)
+        
+    Returns:
+        List of table objects found on the page
+    """
+    try:
+        page_idx, pdf_path, source = page_info
+        # Open document in each process
+        doc = pymupdf.open(pdf_path)
         page = doc.load_page(page_idx)
         tables = page.find_tables(strategy="lines_strict").tables
+        page_tables = []
+        
         if tables:
             for table in tables:
                 bbox = table.bbox
                 n_rows = table.row_count
                 n_columns = table.col_count
                 text = table.to_markdown()
-
-                target_table_page_0_indexed = page_idx
-                actual_prev_page_0_indexed = target_table_page_0_indexed - 1
-                filtered_prev_page_table_bboxes = []
-                if actual_prev_page_0_indexed >= 0:
-                    for t_prev in total_tables:
-                        if t_prev["page"] - 1 == actual_prev_page_0_indexed:
-                            filtered_prev_page_table_bboxes.append(t_prev["bbox"])
-
-                context = get_context_before_table(
-                    doc=doc,
-                    table_page_num_0_indexed=target_table_page_0_indexed,
-                    table_bbox=bbox,
-                    prev_page_all_table_bboxes=filtered_prev_page_table_bboxes,
-                )
-
+                
                 table_obj = {
                     "text": text,
                     "page": page_idx + 1,
@@ -608,17 +534,93 @@ def get_tables_from_pdf_2(
                     "n_rows": n_rows,
                     "n_columns": n_columns,
                     "bbox": bbox,
-                    "context_before": context,
+                    "context_before": "",  # Will be filled later
                     "is_new_section_context": False,
                 }
-                total_tables.append(table_obj)
+                page_tables.append(table_obj)
+        
+        # Close document in this process
+        doc.close()
+        return page_tables
+    except Exception as e:
+        logger.error(f"Error processing page {page_idx + 1}: {str(e)}")
+        return []
 
+def get_tables_from_pdf_2(
+    doc: Union[str, pymupdf.Document],
+    pages: List[int] = None,
+) -> List[Table]:
+    # Convert Document object to file path if needed
+    if isinstance(doc, pymupdf.Document):
+        pdf_path = doc.name
+        doc.close()  # Close the original document
+    else:
+        pdf_path = doc
+        doc = pymupdf.open(pdf_path)
+    
+    source = get_pdf_name(pdf_path)
+    if pages is None:
+        pages = list(range(1, doc.page_count + 1))
+    
+    # Close the document after getting page count
+    doc.close()
+    
+    # Prepare page info for parallel processing
+    page_infos = [(page - 1, pdf_path, source) for page in pages]
+    
+    # Determine number of processes (use 75% of available CPU cores)
+    n_processes = max(1, int(cpu_count() * 0.75))
+    logger.info(f"Using {n_processes} processes for parallel processing")
+    
+    # Process pages in parallel
+    total_tables = []
+    with Pool(processes=n_processes) as pool:
+        # Use tqdm to show progress
+        results = list(tqdm(
+            pool.imap(process_single_page, page_infos),
+            total=len(page_infos),
+            desc="Processing pages"
+        ))
+    
+    # Combine results from all pages
+    for page_tables in results:
+        total_tables.extend(page_tables)
+    
+    # Sort tables by page number and vertical position
+    total_tables.sort(key=lambda t: (t["page"], t["bbox"][1]))
+    
+    # Reopen document for context processing
+    doc = pymupdf.open(pdf_path)
+    
+    # Process contexts for all tables
+    for i, table in enumerate(total_tables):
+        target_table_page_0_indexed = table["page"] - 1
+        actual_prev_page_0_indexed = target_table_page_0_indexed - 1
+        filtered_prev_page_table_bboxes = []
+        
+        if actual_prev_page_0_indexed >= 0:
+            for t_prev in total_tables:
+                if t_prev["page"] - 1 == actual_prev_page_0_indexed:
+                    filtered_prev_page_table_bboxes.append(t_prev["bbox"])
+        
+        context = get_context_before_table(
+            doc=doc,
+            table_page_num_0_indexed=target_table_page_0_indexed,
+            table_bbox=table["bbox"],
+            prev_page_all_table_bboxes=filtered_prev_page_table_bboxes,
+        )
+        total_tables[i]["context_before"] = context
+    
+    # Close document after context processing
+    doc.close()
+    
+    # Process contexts for new section detection
     contexts = [
         (i, table["context_before"])
         for i, table in enumerate(total_tables)
         if table["context_before"] != ""
     ]
-
+    
     # Retry logic for get_is_new_section_context
     max_retries = 5
     for attempt in range(max_retries):
@@ -628,12 +630,13 @@ def get_tables_from_pdf_2(
         logger.warning(f"Retry {attempt + 1}/{max_retries} for get_is_new_section_context due to length mismatch.")
     else:
         logger.error("Failed to get correct response length from get_is_new_section_context after retries.")
-
+    
     for (i, _), is_new in zip(contexts, res["is_new_section_context"]):
         total_tables[i]["is_new_section_context"] = is_new
-
+    
+    # Process headers
     headers = [get_headers_from_markdown(table["text"]) for table in total_tables]
-
+    
     # Retry logic for get_is_has_header
     for attempt in range(max_retries):
         res = get_is_has_header(headers)
@@ -642,213 +645,234 @@ def get_tables_from_pdf_2(
         logger.warning(f"Retry {attempt + 1}/{max_retries} for get_is_has_header due to length mismatch.")
     else:
         logger.error("Failed to get correct response length from get_is_has_header after retries.")
-
+    
     for table, is_has in zip(total_tables, res["is_has_header"]):
         table["is_has_header"] = is_has
+        
     return total_tables
 
-
-def find_spanned_table_groups(
-    tables: List[Table], debug: bool = False
-) -> List[List[Table]]:
+def find_spanned_table_groups(tables: List[Table]) -> List[List[Table]]:
     """
-    Identifies groups of tables that span across multiple pages from a list of tables.
-
-    The logic follows specific rules to determine if a table is a continuation
-    of the previous one on the next page, considering factors like the context
-    before the table, the presence of headers, and new section markers. Tables
-    are first sorted by page number and then by their vertical position on the page.
-
+    Tìm các nhóm bảng kéo dài qua nhiều trang (span multipage).
+    
     Args:
-        tables: A list of Table objects. These tables will be sorted internally
-                before processing.
-        debug: If True, enables detailed debug logging to stderr. This will also
-               disable the tqdm progress bar to prevent log clutter.
-
+        tables: Danh sách các bảng đã được sắp xếp theo thứ tự xuất hiện trong tài liệu
+        
     Returns:
-        A list of table groups. Each group is a list of Table objects
-        that are considered part of the same logical table spanning
-        across one or more pages. An empty list is returned if the input
-        `tables` list is empty.
+        Danh sách các nhóm bảng, mỗi nhóm là một list các bảng liên tục
     """
     if not tables:
         return []
+    
+    # Sắp xếp tables theo page và position nếu chưa được sắp xếp
+    sorted_tables = sorted(tables, key=lambda t: (t['page'], t['bbox'][1]))  # sort by page and y-coordinate
+    
+    groups = []
+    current_group = [sorted_tables[0]]
+    
+    for i in range(1, len(sorted_tables)):
+        current_table = sorted_tables[i]
+        prev_table = sorted_tables[i-1]
+        
+        if _should_group_with_previous(current_table, prev_table):
+            current_group.append(current_table)
+        else:
+            # Kết thúc group hiện tại và bắt đầu group mới
+            groups.append(current_group)
+            current_group = [current_table]
+    
+    # Thêm group cuối cùng
+    groups.append(current_group)
+    
+    return groups
 
-    # Sort tables by page and then by vertical position (top of bbox y0).
-    # Assuming bbox is (x0, y0, x1, y1) where y0 is the top coordinate.
-    # This is crucial for correctly identifying sequential tables in the document.
-    sorted_tables = sorted(tables, key=lambda t: (t["page"], t["bbox"][1]))
+def _should_group_with_previous(current_table: Table, prev_table: Table) -> bool:
+    """
+    Quyết định liệu current_table có nên được nhóm với prev_table hay không.
+    
+    Logic dựa trên flowchart đã phân tích:
+    1. Kiểm tra trang kế tiếp
+    2. Kiểm tra context tiêu đề mới  
+    3. Kiểm tra header riêng
+    4. Phân biệt dựa trên context_before
+    """
+    
+    # Điều kiện tiên quyết: phải là trang kế tiếp
+    if current_table['page'] != prev_table['page'] + 1:
+        return False
+    
+    # Nếu context trước current_table là tiêu đề cho bảng/phần mới -> không group
+    if current_table['is_new_section_context']:
+        return False
+    
+    # Nếu current_table có header riêng -> không group (thường là bảng mới)
+    if current_table['is_has_header']:
+        return False
+    
+    # Nếu current_table không có header riêng -> có khả năng cao là span
+    if not current_table['is_has_header']:
+        # Trường hợp 1: Span rõ ràng (context_before rỗng)
+        if not current_table['context_before'].strip():
+            return True
+        
+        # Trường hợp 2: Span với context "nhiễu" 
+        # (context_before không rỗng nhưng không phải tiêu đề mới)
+        # Thêm kiểm tra tương thích cấu trúc cột để tăng độ tin cậy
+        if _is_compatible_structure(current_table, prev_table):
+            return True
+    
+    # Các trường hợp khác: không group
+    return False
 
-    if debug and sorted_tables:
-        logger.debug(
-            f"Tables sorted. First table on page: {sorted_tables[0]['page']}, Last table on page: {sorted_tables[-1]['page']}"
+def _is_compatible_structure(current_table: Table, prev_table: Table) -> bool:
+    """
+    Kiểm tra tính tương thích về cấu trúc giữa hai bảng.
+    Cho phép sai lệch 1-2 cột do lỗi extract tool.
+    """
+    
+    # Cho phép sai lệch tối đa 2 cột
+    col_diff = abs(current_table['n_columns'] - prev_table['n_columns'])
+    
+    # Nếu số cột giống nhau hoặc chênh lệch không quá 2 cột
+    if col_diff <= 2:
+        return True
+    
+    # Thêm các kiểm tra khác nếu cần:
+    # - Kiểm tra độ rộng bảng (bbox width)
+    current_width = current_table['bbox'][2] - current_table['bbox'][0]
+    prev_width = prev_table['bbox'][2] - prev_table['bbox'][0]
+    width_ratio = min(current_width, prev_width) / max(current_width, prev_width)
+    
+    # Nếu độ rộng tương tự (>= 80% overlap) thì vẫn có thể group
+    if width_ratio >= 0.8:
+        return True
+    
+    return False
+
+def print_groups_summary(groups: List[List[Table]]) -> None:
+    """In tóm tắt các nhóm bảng để debug"""
+    logger.info(f"Tìm thấy {len(groups)} nhóm bảng:")
+    
+    for i, group in enumerate(groups, 1):
+        if len(group) == 1:
+            table = group[0]
+            logger.info(f"  Nhóm {i}: Bảng đơn (Trang {table['page']}, {table['n_columns']} cột)")
+        else:
+            pages = [t['page'] for t in group]
+            cols = [t['n_columns'] for t in group]
+            logger.info(f"  Nhóm {i}: Span {len(group)} bảng (Trang {min(pages)}-{max(pages)}, Cột: {cols})")
+
+
+def merge_tables(tables: List[Table]) -> MergedTable:
+    try:
+        # Convert each table's markdown text to a DataFrame and fix merged rows
+        dfs = [fix_merged_row_df(convert_markdown_to_df(table["text"])) for table in tables]
+        
+        # Determine the maximum number of columns across all DataFrames
+        max_cols = max(df.shape[1] for df in dfs)
+        
+        # Get headers from the first table to establish consistent column structure
+        target_headers = get_headers_from_markdown(tables[0]["text"])
+        
+        # If target_headers length doesn't match max_cols, create a consistent column structure
+        if len(target_headers) < max_cols:
+            target_headers.extend([f"Col_{i}" for i in range(len(target_headers), max_cols)])
+        elif len(target_headers) > max_cols:
+            target_headers = target_headers[:max_cols]
+        
+        # Process DataFrames using the safer approach
+        normalized_dfs = []
+        
+        # First DataFrame: keep as is (this is our standard with proper headers)
+        first_df = dfs[0].copy()
+        
+        # Ensure first DataFrame has the right number of columns
+        if first_df.shape[1] < max_cols:
+            for j in range(first_df.shape[1], max_cols):
+                first_df[f"temp_col_{j}"] = ""
+        elif first_df.shape[1] > max_cols:
+            first_df = first_df.iloc[:, :max_cols]
+        
+        # Set proper column names for first DataFrame
+        first_df.columns = target_headers[:first_df.shape[1]]
+        normalized_dfs.append(first_df)
+        
+        # Process remaining DataFrames: set numeric column names to avoid header confusion
+        for i in range(1, len(dfs)):
+            df_copy = dfs[i].copy()
+            
+            # Ensure it has the right number of columns first
+            if df_copy.shape[1] < max_cols:
+                for j in range(df_copy.shape[1], max_cols):
+                    df_copy[j] = ""  # Use numeric column names
+            elif df_copy.shape[1] > max_cols:
+                df_copy = df_copy.iloc[:, :max_cols]
+            
+            # Set NUMERIC column names (0, 1, 2, 3...) to avoid header confusion
+            df_copy.columns = list(range(df_copy.shape[1]))
+            
+            # Now safely rename to target headers
+            df_copy.columns = target_headers[:df_copy.shape[1]]
+            
+            normalized_dfs.append(df_copy)
+        
+        # Now concatenate the normalized DataFrames
+        merged_df = pd.concat(normalized_dfs, ignore_index=True)
+        
+        # Post-process: Remove any duplicate header rows
+        # Check if any row has the same values as the target headers
+        header_mask = merged_df.apply(
+            lambda row: all(str(row.iloc[i]).strip().lower() == str(target_headers[i]).strip().lower() 
+                           for i in range(min(len(row), len(target_headers))) 
+                           if target_headers[i].strip()), 
+            axis=1
         )
-
-    table_groups: List[List[Table]] = []
-    # Initialize the first group with the first table.
-    current_group: List[Table] = [sorted_tables[0]]
-
-    # Determine if tqdm should be used: for a meaningful number of tables and not in debug mode.
-    # tqdm is disabled in debug mode to prevent progress bar output from cluttering detailed logs.
-    should_use_tqdm = (
-        len(sorted_tables) > 10
-    )  # Arbitrary threshold: use tqdm for more than 10 tables
-
-    # The loop iterates from the second table.
-    loop_iterator = range(1, len(sorted_tables))
-    if should_use_tqdm:
-        loop_iterator = tqdm(
-            loop_iterator,
-            desc="Processing tables for spanning",
-            unit="table",
-            ncols=100,
-            disable=debug,
+        
+        # Remove header duplicate rows (but keep at least one row)
+        if header_mask.sum() > 0 and len(merged_df) > 1:
+            # Keep only non-header rows
+            merged_df = merged_df[~header_mask]
+            # If we accidentally removed all rows, keep the original
+            if len(merged_df) == 0:
+                merged_df = pd.concat(normalized_dfs, ignore_index=True)
+        
+        # Post-process the merged DataFrame
+        # Convert all columns to string type before filling NaN
+        merged_df = merged_df.astype(str)
+        # Fill NaN values with empty strings
+        merged_df = merged_df.replace('nan', '')
+        # Remove columns with names starting with 'Col' and replace their values with empty strings
+        merged_df.columns = [re.sub(r"^Col\d+", "", col) for col in merged_df.columns]
+        merged_df = merged_df.replace(r"^Col\d+", "", regex=True)
+        
+        # Create a MergedTable with the combined data
+        merged_table = MergedTable(
+            text=merged_df.to_markdown(index=False),
+            page=[table["page"] for table in tables],
+            source=tables[0]["source"],
+            bbox=[table["bbox"] for table in tables],
+            headers=[get_headers_from_markdown(table["text"]) for table in tables],
+            n_rows=merged_df.shape[0],
+            n_columns=merged_df.shape[1],
+            context_before=tables[0]["context_before"],
         )
-
-    for i in loop_iterator:
-        t_current = sorted_tables[i]
-        # The decision to span is based on the last table added to the current_group.
-        last_table_in_current_group = current_group[-1]
-
-        if debug:
-            logger.debug(
-                f"--- Iteration for table index {i} (Page {t_current['page']}) ---"
-            )
-            logger.debug(
-                f"T_current: Page {t_current['page']}, HasHeader: {t_current['is_has_header']}, "
-                f"NewSectionCtx: {t_current['is_new_section_context']}, "
-                f"CtxBefore: '{t_current['context_before'][:30].strip()}...'"
-            )
-            logger.debug(
-                f"Comparing with T_prev_in_group: Page {last_table_in_current_group['page']}"
-            )
-
-        # Pre-condition for span: T_current must be on the page immediately following T_prev_in_group.
-        is_on_next_page = t_current["page"] == last_table_in_current_group["page"] + 1
-
-        if not is_on_next_page:
-            if debug:
-                logger.debug(
-                    f"NOT A SPAN: T_current (Page {t_current['page']}) is not on the next page "
-                    f"after T_prev_in_group (Page {last_table_in_current_group['page']}). Finalizing current group."
-                )
-            table_groups.append(list(current_group))  # Finalize current_group
-            current_group = [t_current]  # Start a new group with t_current
-            continue
-
-        # At this point, is_on_next_page is True.
-
-        # Case: New Table if T_current is marked by a new section context.
-        # This condition has high precedence.
-        if t_current["is_new_section_context"]:
-            if debug:
-                logger.debug(
-                    f"NOT A SPAN: T_current (Page {t_current['page']}) has 'is_new_section_context' == True. "
-                    "Finalizing current group."
-                )
-            table_groups.append(list(current_group))
-            current_group = [t_current]
-            continue
-
-        # Case: New Table if T_current has its own header (and not a new section context).
-        # A table with its own significant header is usually independent.
-        if t_current["is_has_header"]:
-            if debug:
-                logger.debug(
-                    f"NOT A SPAN: T_current (Page {t_current['page']}) has 'is_has_header' == True. "
-                    "Finalizing current group."
-                )
-            table_groups.append(list(current_group))
-            current_group = [t_current]
-            continue
-
-        # If we reach here, the conditions for a span are strong:
-        # 1. T_current is on the next page.
-        # 2. T_current.is_new_section_context is False.
-        # 3. T_current.is_has_header is False.
-        # The nature of 'context_before' differentiates clear vs. noisy span.
-
-        # Case 1: Classic Span (context_before is empty).
-        if not t_current["context_before"]:  # context_before is empty or None
-            if debug:
-                logger.debug(
-                    f"IS A SPAN (Classic): T_current (Page {t_current['page']}) meets span criteria, "
-                    "and 'context_before' is empty. Adding to current group."
-                )
-            current_group.append(t_current)
-        else:  # Case 2: Span with "Noise" Context (context_before is not empty but not a new section marker).
-            if debug:
-                logger.debug(
-                    f"IS A SPAN (Noisy Context): T_current (Page {t_current['page']}) meets span criteria, "
-                    "and 'context_before' is present (considered noise). Adding to current group."
-                )
-            current_group.append(t_current)
-            # Note: The problem description mentioned an optional further check for column compatibility here.
-            # e.g., t_current['n_columns'] == last_table_in_current_group['n_columns'].
-            # This is not strictly enforced by the provided flowchart logic for this case
-            # but could be an enhancement for higher precision if required.
-
-    # Add the last processed group to table_groups.
-    # This ensures the group being built is added, especially if the loop finishes.
-    if current_group:
-        table_groups.append(list(current_group))
-
-    if debug:
-        logger.debug(
-            f"Finished finding spanned table groups. Total groups found: {len(table_groups)}."
+        
+        return merged_table
+        
+    except Exception as e:
+        logger.error(f"Error merging tables: {str(e)}")
+        # Return a fallback merged table with just the first table
+        first_table = tables[0]
+        return MergedTable(
+            text=first_table["text"],
+            page=[first_table["page"]],
+            source=first_table["source"],
+            bbox=[first_table["bbox"]],
+            headers=[get_headers_from_markdown(first_table["text"])],
+            n_rows=first_table["n_rows"],
+            n_columns=first_table["n_columns"],
+            context_before=first_table["context_before"],
         )
-        for i, group in enumerate(table_groups):
-            group_pages = [t["page"] for t in group]
-            logger.debug(
-                f"Group {i + 1}: Contains {len(group)} table segment(s) on page(s): {group_pages}"
-            )
-
-    return table_groups
-
-def merge_tables(tables: List[Table]) -> List[MergedTable]:
-    # Convert each table's markdown text to a DataFrame and fix merged rows
-    dfs = [fix_merged_row_df(convert_markdown_to_df(table["text"])) for table in tables]
-    
-    # Determine the maximum number of columns across all DataFrames
-    max_cols = max(df.shape[1] for df in dfs)
-    
-    # Ensure all DataFrames have the same number of columns by adding blank columns
-    for i, df in enumerate(dfs):
-        if df.shape[1] < max_cols:
-            # Add blank columns to match the maximum column count
-            for _ in range(max_cols - df.shape[1]):
-                df[df.shape[1]] = ""
-    
-    # Handle the case where dfs[0] has fewer columns than max_cols
-    if dfs[0].shape[1] < max_cols:
-        for _ in range(max_cols - dfs[0].shape[1]):
-            dfs[0][dfs[0].shape[1]] = ""
-    
-    # Concatenate all DataFrames along the rows (vertically)
-    headers = get_headers_from_markdown(tables[0]["text"])
-    dfs = [dfs[0]] + [solve_non_header_table(df, headers) for df in dfs[1:]]
-    merged_df = pd.concat(dfs, ignore_index=True)
-    
-    # Post-process the merged DataFrame
-    # Fill NaN values with empty strings
-    merged_df.fillna("", inplace=True)
-    # Remove columns with names starting with 'Col' and replace their values with empty strings
-    merged_df.columns = [re.sub(r"^Col\d+", "", col) for col in merged_df.columns]
-    merged_df.replace(r"^Col\d+", "", regex=True, inplace=True)
-    
-    # Create a MergedTable with the combined data
-    merged_table = MergedTable(
-        text=merged_df.to_markdown(index=False),
-        page=[table["page"] for table in tables],
-        source=tables[0]["source"],
-        bbox=[table["bbox"] for table in tables],
-        headers=[get_headers_from_markdown(table["text"]) for table in tables],
-        n_rows=merged_df.shape[0],
-        n_columns=merged_df.shape[1],
-        context_before=tables[0]["context_before"],
-    )
-    
-    return merged_table
 
 
 def full_pipeline(doc: Union[List[str], List[pymupdf.Document]], pages: List[int] = None) -> List[MergedTable]:
@@ -873,8 +897,11 @@ def full_pipeline(doc: Union[List[str], List[pymupdf.Document]], pages: List[int
             tables = get_tables_from_pdf_2(d, pages)
             logger.info("   Finding spanned table groups...")
             table_groups = find_spanned_table_groups(tables)
+            print_groups_summary(table_groups)
             logger.info("   Merging tables...")
-            merged_tables.extend([merge_tables(group) for group in table_groups])
+            for group in table_groups:
+                merged_table = merge_tables(group)
+                merged_tables.append(merged_table)
             logger.info("   Processed document: Done!")
         except Exception as e:
             logger.error(f"Error processing document: {str(e)}")
@@ -886,15 +913,16 @@ def full_pipeline(doc: Union[List[str], List[pymupdf.Document]], pages: List[int
 
 if __name__ == "__main__":
     # Example usage with proper file path
-    source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/0c92f65db928c431023f59603039aa1e.pdf"
+    source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/table_filter/input_pdfs/ccc3348504535e22aa44231e57052869.pdf"
     
     # Validate file exists before processing
     if not os.path.exists(source_path):
         logger.error(f"File not found: {source_path}")
     else:
         merged_tables = full_pipeline(source_path)
-        for table in merged_tables:
-            print("Tables:", table['context_before'])
-            print("Page:", table['page'])
-            print(table["text"])
-            print("="*100)
+        with open("test_output.md", "w", encoding="utf-8") as f:
+            for table in merged_tables:
+                f.write(f"## Tables: {table['context_before']}\n\n")
+                f.write(f"**Page:** {table['page']}\n\n")
+                f.write(f"{table['text']}\n")
+                f.write("\n" + "="*100 + "\n\n")
