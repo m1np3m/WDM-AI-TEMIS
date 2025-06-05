@@ -94,7 +94,7 @@ credentials = service_account.Credentials.from_service_account_file(
 #     return json.loads(res.text)
 
 
-def get_is_new_section_context(contexts: List[str]):
+def get_is_new_section_context(contexts: List[str], return_prompt: bool = False):
     client = genai.Client(
         vertexai=True,
         project="unlimited-461914",
@@ -138,12 +138,14 @@ def get_is_new_section_context(contexts: List[str]):
 
     contexts_text = "\n\n".join(formatted_contexts)
 
+    input_text = f"### List of Contexts Before Tables:\n\n{contexts_text}\n\n### Total number of contexts: {len(contexts)}"
+
     contents = [
         types.Content(
             role="user",
             parts=[
                 types.Part.from_text(
-                    text=f"### List of Contexts Before Tables:\n\n{contexts_text}\n\n### Total number of contexts: {len(contexts)}"
+                    text=input_text
                 )
             ],
         ),
@@ -182,10 +184,12 @@ def get_is_new_section_context(contexts: List[str]):
         contents=contents,
         config=generate_content_config,
     )
+    if return_prompt:
+        return json.loads(res.text), si_text1 + input_text
     return json.loads(res.text)
 
 
-def get_is_has_header(rows: List[List[str]], first_3_rows: List[str]):
+def get_is_has_header(rows: List[List[str]], first_3_rows: List[str], return_prompt: bool = False):
     client = genai.Client(
         vertexai=True,
         project="unlimited-461914",
@@ -212,7 +216,7 @@ def get_is_has_header(rows: List[List[str]], first_3_rows: List[str]):
         # Format table context (first 3 rows in markdown)
         table_preview = table_context.strip() if table_context else "[EMPTY_TABLE]"
         
-        formatted_table = f"""Table {i}:
+        formatted_table = f"""\nTable {i}:
 Header Row: {header_text}
 Table Preview (First 3 rows):
 {table_preview}"""
@@ -221,12 +225,13 @@ Table Preview (First 3 rows):
 
     tables_text = "\n\n" + "="*50 + "\n\n".join(formatted_tables)
 
+    input_text = f"\n\n### Tables Analysis:\n{tables_text}\n\n### Total number of tables: {len(rows)}"
     contents = [
         types.Content(
             role="user",
             parts=[
                 types.Part.from_text(
-                    text=f"### Tables Analysis:\n{tables_text}\n\n### Total number of tables: {len(rows)}"
+                    text=input_text
                 )
             ],
         ),
@@ -302,4 +307,6 @@ A meaningful header row contains column names that describe the type of data tha
         contents=contents,
         config=generate_content_config,
     )
+    if return_prompt:
+        return json.loads(res.text), si_text + input_text
     return json.loads(res.text)

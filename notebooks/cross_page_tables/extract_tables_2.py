@@ -555,7 +555,8 @@ def get_n_rows_from_markdown(markdown_text: str, n_rows: int) -> str:
         n_rows: Number of rows to extract (including header).
 
     Returns:
-        A markdown string containing only the first n rows of the table.
+        A markdown string containing only the first n rows of the table,
+        with all Col1, Col2, Col3, ... removed from the start of each cell.
     """
     lines = [line for line in markdown_text.strip().splitlines() if line.strip()]
     if not lines:
@@ -583,17 +584,27 @@ def get_n_rows_from_markdown(markdown_text: str, n_rows: int) -> str:
     # Add up to n_rows-1 data rows (since header is already included)
     data_lines = table_lines[2:2 + max(0, n_rows - 1)]
     result_lines += data_lines
-    
-    # thay thế Col1, Col2, Col3, ... bằng ""
-    result_lines = [re.sub(r"^Col\d+", "", line) for line in result_lines]
-    
-    return "\n".join(result_lines)
+
+    # Remove Col1, Col2, Col3, ... from the start of each cell in every line
+    cleaned_lines = []
+    for line in result_lines:
+        # Only process lines that look like table rows (contain at least one |)
+        if "|" in line:
+            # Remove Col\d+ at the start of each cell (after | or at start)
+            # This regex replaces occurrences of Col\d+ at the start of a cell
+            cleaned = re.sub(r'(\||^)\s*Col\d+\s*', r'\1', line)
+            cleaned_lines.append(cleaned)
+        else:
+            cleaned_lines.append(line)
+
+    return "\n".join(cleaned_lines)
     
 
 def get_tables_from_pdf_2(
     doc: Union[str, pymupdf.Document],
     pages: List[int] = None,
     debug: bool = False,
+    debug_level: int = 1,
 ) -> List[Table]:
     # Convert Document object to file path if needed
     if isinstance(doc, pymupdf.Document):
@@ -669,7 +680,7 @@ def get_tables_from_pdf_2(
     # Retry logic for get_is_new_section_context
     max_retries = 5
     for attempt in range(max_retries):
-        res = get_is_new_section_context([context for _, context in contexts])
+        res, prompt_contexts = get_is_new_section_context([context for _, context in contexts], return_prompt=True)
         if len(res["is_new_section_context"]) == len(contexts):
             break
         logger.warning(f"Retry {attempt + 1}/{max_retries} for get_is_new_section_context due to length mismatch.")
@@ -687,7 +698,7 @@ def get_tables_from_pdf_2(
     
     first_3_rows = [get_n_rows_from_markdown(table["text"], 3) for table in total_tables]
     for attempt in range(max_retries):
-        res = get_is_has_header(headers, first_3_rows)
+        res, prompt_headers = get_is_has_header(headers, first_3_rows, return_prompt=True)
         if len(res["is_has_header"]) == len(headers):
             break
         logger.warning(f"Retry {attempt + 1}/{max_retries} for get_is_has_header due to length mismatch.")
@@ -699,18 +710,20 @@ def get_tables_from_pdf_2(
         
     if debug:
         for idx, table in enumerate(total_tables):
-            # print(table["text"])
-            print(f"Table {idx+1}:")
-            print(f"    Page: {table['page']}")
-            # print(f"Bbox: {table['bbox']}")
-            print(f"    N_rows: {table['n_rows']}")
-            print(f"    N_columns: {table['n_columns']}")
-            print(f"    Headers: {headers[idx]}")
-            print(f"    Is has header: {table['is_has_header']}")
-            print(f"    Is new section context: {table['is_new_section_context']}")
-            print(f"    Context before: {table['context_before']}")
-            print(f"    Text: {table['text']}")
-            print("-"*100)
+            if debug_level >= 1:
+                print(f"Table {idx+1}:")
+                print(f"    Page: {table['page']}")
+                # print(f"Bbox: {table['bbox']}")
+                print(f"    N_rows: {table['n_rows']}")
+                print(f"    N_columns: {table['n_columns']}")
+                print(f"    First row (can be header): {headers[idx]}")
+                print(f"    Is has header: {table['is_has_header']}")
+                print(f"    Is new section context: {table['is_new_section_context']}")
+                print(f"    Context before: {table['context_before']}")
+                # print(f"    Text: {table['text']}")
+                print("-"*100)
+        if debug_level >= 2:
+            print(f"CONTEXTS PROMPT:\n{prompt_contexts}\n\nHEADERS PROMPT:\n{prompt_headers}")
     
     return total_tables
 
@@ -968,7 +981,7 @@ def merge_tables(tables: List[Table], handle_merge_cell: bool = False) -> Merged
         )
 
 
-def full_pipeline(doc: Union[List[str], List[pymupdf.Document]], pages: List[int] = None, handle_merge_cell: bool = False, debug: bool = False) -> List[MergedTable]:
+def full_pipeline(doc: Union[List[str], List[pymupdf.Document]], pages: List[int] = None, handle_merge_cell: bool = False, debug: bool = False, debug_level: int = 1) -> List[MergedTable]:
     merged_tables = []
     
     # Convert single string to list if needed
@@ -987,7 +1000,7 @@ def full_pipeline(doc: Union[List[str], List[pymupdf.Document]], pages: List[int
                 logger.info(f"Processing document: {d.name}")
             
             logger.info("   Extracting tables...")
-            tables = get_tables_from_pdf_2(d, pages, debug)
+            tables = get_tables_from_pdf_2(d, pages, debug, debug_level)
             logger.info("   Finding spanned table groups...")
             table_groups = find_spanned_table_groups(tables)
             print_groups_summary(table_groups)
@@ -995,12 +1008,11 @@ def full_pipeline(doc: Union[List[str], List[pymupdf.Document]], pages: List[int
             for group in table_groups:
                 merged_table = merge_tables(group, handle_merge_cell)
                 merged_tables.append(merged_table)
-            logger.info("   Processed document: Done!")
+            logger.info("   Done!")
         except Exception as e:
             logger.error(f"Error processing document: {str(e)}")
             continue
             
-    logger.info("Done!")
     return merged_tables
 
 
@@ -1008,12 +1020,13 @@ if __name__ == "__main__":
     # Example usage with proper file path
     # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/table_filter/input_pdfs/ccc3348504535e22aa44231e57052869.pdf"
     source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/b014b8ca3c8ee543b655c29747cc6090.pdf"
+    # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/b4c55e2918d743c7755992b0803d2dbe.pdf"
     
     # Validate file exists before processing
     if not os.path.exists(source_path):
         logger.error(f"File not found: {source_path}")
     else:
-        merged_tables = full_pipeline(source_path, debug=True, handle_merge_cell=False)
+        merged_tables = full_pipeline(source_path, debug=True, handle_merge_cell=False, debug_level=2)
         with open("test_output.md", "w", encoding="utf-8") as f:
             for table in merged_tables:
                 f.write(f"## Tables: {table['context_before']}\n\n")
