@@ -663,6 +663,7 @@ def get_tables_from_pdf_2(
             print(f"    Is has header: {table['is_has_header']}")
             print(f"    Is new section context: {table['is_new_section_context']}")
             print(f"    Context before: {table['context_before']}")
+            print(f"    Text: {table['text']}")
             print("-"*100)
     
     return total_tables
@@ -787,6 +788,31 @@ def merge_tables(tables: List[Table], handle_merge_cell: bool = False) -> Merged
         else:
             dfs = [convert_markdown_to_df(table["text"]) for table in tables]
         
+        # Handle single-row tables that might have data as column names
+        processed_dfs = []
+        for i, df in enumerate(dfs):
+            # Check if this DataFrame might have data as column names
+            # This happens when a table has only 1 data row and pandas treats it as headers
+            if len(df) <= 1:
+                # Check if we have only one row and it's all NaN values
+                if len(df) == 1 and df.iloc[0].isna().all():
+                    # Get column names (which might be the actual data)
+                    col_names = list(df.columns)
+                    
+                    # Convert column names back to a data row
+                    data_row = pd.DataFrame([col_names])
+                    # Give it generic column names
+                    data_row.columns = [f"Col_{j}" for j in range(len(col_names))]
+                    processed_dfs.append(data_row)
+                    logger.debug(f"Table {i}: Converted misinterpreted headers back to data row")
+                else:
+                    processed_dfs.append(df)
+            else:
+                processed_dfs.append(df)
+        
+        # Update dfs to use processed versions
+        dfs = processed_dfs
+        
         # Determine the maximum number of columns across all DataFrames
         max_cols = max(df.shape[1] for df in dfs)
         
@@ -838,22 +864,24 @@ def merge_tables(tables: List[Table], handle_merge_cell: bool = False) -> Merged
         # Now concatenate the normalized DataFrames
         merged_df = pd.concat(normalized_dfs, ignore_index=True)
         
-        # Post-process: Remove any duplicate header rows
-        # Check if any row has the same values as the target headers
-        header_mask = merged_df.apply(
-            lambda row: all(str(row.iloc[i]).strip().lower() == str(target_headers[i]).strip().lower() 
-                           for i in range(min(len(row), len(target_headers))) 
-                           if target_headers[i].strip()), 
-            axis=1
-        )
-        
-        # Remove header duplicate rows (but keep at least one row)
-        if header_mask.sum() > 0 and len(merged_df) > 1:
-            # Keep only non-header rows
-            merged_df = merged_df[~header_mask]
-            # If we accidentally removed all rows, keep the original
-            if len(merged_df) == 0:
-                merged_df = pd.concat(normalized_dfs, ignore_index=True)
+        # Post-process: Remove any duplicate header rows (but be more careful)
+        # Only remove header rows if we have enough data rows
+        if len(merged_df) > 2:  # Only try to remove headers if we have more than 2 rows
+            # Check if any row has the same values as the target headers
+            header_mask = merged_df.apply(
+                lambda row: all(str(row.iloc[i]).strip().lower() == str(target_headers[i]).strip().lower() 
+                               for i in range(min(len(row), len(target_headers))) 
+                               if target_headers[i].strip()), 
+                axis=1
+            )
+            
+            # Remove header duplicate rows (but keep at least one row)
+            if header_mask.sum() > 0 and len(merged_df) > header_mask.sum():
+                # Keep only non-header rows
+                merged_df = merged_df[~header_mask]
+                # If we accidentally removed all rows, keep the original
+                if len(merged_df) == 0:
+                    merged_df = pd.concat(normalized_dfs, ignore_index=True)
         
         # Post-process the merged DataFrame
         # Convert all columns to string type before filling NaN
