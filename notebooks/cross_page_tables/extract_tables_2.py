@@ -546,6 +546,50 @@ def process_single_page(page_info: Tuple[int, str, str]) -> List[Dict]:
         logger.error(f"Error processing page {page_idx + 1}: {str(e)}")
         return []
 
+def get_n_rows_from_markdown(markdown_text: str, n_rows: int) -> str:
+    """
+    Extract the first n rows (including header) from a markdown table string.
+
+    Args:
+        markdown_text: The markdown table as a string.
+        n_rows: Number of rows to extract (including header).
+
+    Returns:
+        A markdown string containing only the first n rows of the table.
+    """
+    lines = [line for line in markdown_text.strip().splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    # Find the header and separator lines
+    header_idx = None
+    sep_idx = None
+    for idx, line in enumerate(lines):
+        if "|" in line:
+            if header_idx is None:
+                header_idx = idx
+            elif sep_idx is None and set(line.replace("|", "").strip()) <= set("-: "):
+                sep_idx = idx
+                break
+
+    if header_idx is None or sep_idx is None:
+        # Not a valid markdown table
+        return ""
+
+    # The table starts at header_idx, separator at sep_idx
+    table_lines = lines[header_idx:]
+    # Always include header and separator
+    result_lines = table_lines[:2]
+    # Add up to n_rows-1 data rows (since header is already included)
+    data_lines = table_lines[2:2 + max(0, n_rows - 1)]
+    result_lines += data_lines
+    
+    # thay thế Col1, Col2, Col3, ... bằng ""
+    result_lines = [re.sub(r"^Col\d+", "", line) for line in result_lines]
+    
+    return "\n".join(result_lines)
+    
+
 def get_tables_from_pdf_2(
     doc: Union[str, pymupdf.Document],
     pages: List[int] = None,
@@ -640,8 +684,10 @@ def get_tables_from_pdf_2(
     # Post process: remove Col1, Col2, Col3, etc.
     headers = [[re.sub(r"^Col\d+", "", col) for col in header] for header in headers]
     # Retry logic for get_is_has_header
+    
+    first_3_rows = [get_n_rows_from_markdown(table["text"], 3) for table in total_tables]
     for attempt in range(max_retries):
-        res = get_is_has_header(headers)
+        res = get_is_has_header(headers, first_3_rows)
         if len(res["is_has_header"]) == len(headers):
             break
         logger.warning(f"Retry {attempt + 1}/{max_retries} for get_is_has_header due to length mismatch.")
