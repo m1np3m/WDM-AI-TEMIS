@@ -2,6 +2,7 @@ import os
 import re
 from io import StringIO
 from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union
+import numpy as np
 
 import pandas as pd
 import pymupdf  # PyMuPDF
@@ -60,6 +61,44 @@ def get_headers_from_markdown(markdown_text: str) -> List[str]:
             break
     return headers
 
+
+def solve_non_header_table(df: pd.DataFrame, target_headers: List[str]) -> pd.DataFrame:
+    if not isinstance(target_headers, list):
+        logger.warning(
+            "Warning: target_headers không phải là list. Trả về DataFrame gốc."
+        )
+        return df.copy()
+    df_copy = df.copy()
+    first_row_data_values: List[Any] = []
+    for col_original_name in df_copy.columns:
+        if isinstance(col_original_name, str) and col_original_name.startswith(
+            "Unnamed:"
+        ):
+            first_row_data_values.append(np.nan)
+        else:
+            first_row_data_values.append(str(col_original_name))
+    if len(first_row_data_values) != len(target_headers):
+        if len(first_row_data_values) > len(target_headers):
+            first_row_data_values = first_row_data_values[: len(target_headers)]
+        else:
+            first_row_data_values.extend(
+                [np.nan] * (len(target_headers) - len(first_row_data_values))
+            )
+    new_first_row_df = pd.DataFrame([first_row_data_values], columns=target_headers)
+    num_target_cols = len(target_headers)
+    current_data_cols = df_copy.shape[1]
+    if num_target_cols == 0:
+        if current_data_cols > 0:
+            df_copy = pd.DataFrame(index=df_copy.index)
+    else:
+        if current_data_cols < num_target_cols:
+            for i in range(num_target_cols - current_data_cols):
+                df_copy[f"__temp_added_col_{i}"] = np.nan
+        elif current_data_cols > num_target_cols:
+            df_copy = df_copy.iloc[:, :num_target_cols]
+    df_copy.columns = target_headers
+    result_df = pd.concat([new_first_row_df, df_copy], ignore_index=True)
+    return result_df.reset_index(drop=True)
 
 def split_markdown_into_tables(markdown_text, debug=False):
     """
@@ -415,15 +454,15 @@ def get_context_before_table(
     return final_result_text.strip()
 
 
+
 def convert_markdown_to_df(markdown_text: str) -> pd.DataFrame:
-    html_table = markdown(markdown_text, extensions=["markdown.extensions.tables"])
+    html_table = markdown(markdown_text, extensions=['markdown.extensions.tables'])
     dfs = pd.read_html(StringIO(f"<table>{html_table}</table>"))
     if dfs:
         df = dfs[0]
     else:
         print("Không tìm thấy bảng nào.")
     return df
-
 
 def fix_merged_row(df_col1, df_col2) -> pd.Series:
     def find_consecutive_true_indices(series):
@@ -433,9 +472,8 @@ def fix_merged_row(df_col1, df_col2) -> pd.Series:
         for i, value in enumerate(series):
             if value:
                 current_streak.append(i)
-            else:
-                if len(current_streak) >= 2:
-                    consecutive_groups.append(current_streak)
+            elif len(current_streak) >= 2:
+                consecutive_groups.append(current_streak)
                 current_streak = []
 
         if len(current_streak) >= 2:
@@ -443,27 +481,17 @@ def fix_merged_row(df_col1, df_col2) -> pd.Series:
 
         return consecutive_groups
 
-    consecutive_true_indices = find_consecutive_true_indices(df_col1 == df_col2)
-    if consecutive_true_indices:
-        for group in consecutive_true_indices:
-            if group and len(group) > 1 and group[0] - 1 >= 0:
-                replace_value = df_col2.iloc[group[0] - 1]
-                df_col2.iloc[group] = replace_value
+    for group in find_consecutive_true_indices(df_col1 == df_col2):
+        if group[0] > 0:
+            df_col2.iloc[group] = df_col2.iloc[group[0] - 1]
     return df_col2
-
 
 def fix_merged_row_df(df: pd.DataFrame) -> pd.DataFrame:
     test_df = df.copy()
-
     n_cols = test_df.shape[1]
-    processed_cols = []
-    for i in range(1, n_cols - 1):
-        col1 = test_df.iloc[:, i]
-        col2 = test_df.iloc[:, i + 1]
-        processed_cols.append(fix_merged_row(col1, col2))
 
-    for i in range(2, n_cols):
-        test_df.iloc[:, i] = processed_cols[i - 2]
+    for i in range(1, n_cols - 1):
+        test_df.iloc[:, i + 1] = fix_merged_row(test_df.iloc[:, i], test_df.iloc[:, i + 1])
 
     return test_df
 
@@ -590,17 +618,31 @@ def get_tables_from_pdf_2(
         for i, table in enumerate(total_tables)
         if table["context_before"] != ""
     ]
-    # print("Contexts:", "\n".join(context for _, context in contexts))
-    res = get_is_new_section_context([context for _, context in contexts])
-    # print(len(contexts))
-    # print(len(res['is_new_section_context']))
+
+    # Retry logic for get_is_new_section_context
+    max_retries = 5
+    for attempt in range(max_retries):
+        res = get_is_new_section_context([context for _, context in contexts])
+        if len(res["is_new_section_context"]) == len(contexts):
+            break
+        logger.warning(f"Retry {attempt + 1}/{max_retries} for get_is_new_section_context due to length mismatch.")
+    else:
+        logger.error("Failed to get correct response length from get_is_new_section_context after retries.")
+
     for (i, _), is_new in zip(contexts, res["is_new_section_context"]):
         total_tables[i]["is_new_section_context"] = is_new
 
     headers = [get_headers_from_markdown(table["text"]) for table in total_tables]
-    res = get_is_has_header(headers)
-    # print(len(headers))
-    # print(len(res["is_has_header"]))
+
+    # Retry logic for get_is_has_header
+    for attempt in range(max_retries):
+        res = get_is_has_header(headers)
+        if len(res["is_has_header"]) == len(headers):
+            break
+        logger.warning(f"Retry {attempt + 1}/{max_retries} for get_is_has_header due to length mismatch.")
+    else:
+        logger.error("Failed to get correct response length from get_is_has_header after retries.")
+
     for table, is_has in zip(total_tables, res["is_has_header"]):
         table["is_has_header"] = is_has
     return total_tables
@@ -762,3 +804,97 @@ def find_spanned_table_groups(
             )
 
     return table_groups
+
+def merge_tables(tables: List[Table]) -> List[MergedTable]:
+    # Convert each table's markdown text to a DataFrame and fix merged rows
+    dfs = [fix_merged_row_df(convert_markdown_to_df(table["text"])) for table in tables]
+    
+    # Determine the maximum number of columns across all DataFrames
+    max_cols = max(df.shape[1] for df in dfs)
+    
+    # Ensure all DataFrames have the same number of columns by adding blank columns
+    for i, df in enumerate(dfs):
+        if df.shape[1] < max_cols:
+            # Add blank columns to match the maximum column count
+            for _ in range(max_cols - df.shape[1]):
+                df[df.shape[1]] = ""
+    
+    # Handle the case where dfs[0] has fewer columns than max_cols
+    if dfs[0].shape[1] < max_cols:
+        for _ in range(max_cols - dfs[0].shape[1]):
+            dfs[0][dfs[0].shape[1]] = ""
+    
+    # Concatenate all DataFrames along the rows (vertically)
+    headers = get_headers_from_markdown(tables[0]["text"])
+    dfs = [dfs[0]] + [solve_non_header_table(df, headers) for df in dfs[1:]]
+    merged_df = pd.concat(dfs, ignore_index=True)
+    
+    # Post-process the merged DataFrame
+    # Fill NaN values with empty strings
+    merged_df.fillna("", inplace=True)
+    # Remove columns with names starting with 'Col' and replace their values with empty strings
+    merged_df.columns = [re.sub(r"^Col\d+", "", col) for col in merged_df.columns]
+    merged_df.replace(r"^Col\d+", "", regex=True, inplace=True)
+    
+    # Create a MergedTable with the combined data
+    merged_table = MergedTable(
+        text=merged_df.to_markdown(index=False),
+        page=[table["page"] for table in tables],
+        source=tables[0]["source"],
+        bbox=[table["bbox"] for table in tables],
+        headers=[get_headers_from_markdown(table["text"]) for table in tables],
+        n_rows=merged_df.shape[0],
+        n_columns=merged_df.shape[1],
+        context_before=tables[0]["context_before"],
+    )
+    
+    return merged_table
+
+
+def full_pipeline(doc: Union[List[str], List[pymupdf.Document]], pages: List[int] = None) -> List[MergedTable]:
+    merged_tables = []
+    
+    # Convert single string to list if needed
+    if isinstance(doc, str):
+        doc = [doc]
+    
+    for d in doc:
+        try:
+            if isinstance(d, str):
+                # Validate file path
+                if not os.path.exists(d):
+                    logger.error(f"File not found: {d}")
+                    continue
+                logger.info(f"Processing document: {get_pdf_name(d)}")
+            else:
+                logger.info(f"Processing document: {d.name}")
+            
+            logger.info("   Extracting tables...")
+            tables = get_tables_from_pdf_2(d, pages)
+            logger.info("   Finding spanned table groups...")
+            table_groups = find_spanned_table_groups(tables)
+            logger.info("   Merging tables...")
+            merged_tables.extend([merge_tables(group) for group in table_groups])
+            logger.info("   Processed document: Done!")
+        except Exception as e:
+            logger.error(f"Error processing document: {str(e)}")
+            continue
+            
+    logger.info("Done!")
+    return merged_tables
+
+
+if __name__ == "__main__":
+    # Example usage with proper file path
+    source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/0c92f65db928c431023f59603039aa1e.pdf"
+    
+    # Validate file exists before processing
+    if not os.path.exists(source_path):
+        logger.error(f"File not found: {source_path}")
+    else:
+        merged_tables = full_pipeline(source_path)
+        for table in merged_tables:
+            print("Tables:", table['context_before'])
+            print("Page:", table['page'])
+            print(table["text"])
+            print("="*100)
