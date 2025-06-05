@@ -549,6 +549,7 @@ def process_single_page(page_info: Tuple[int, str, str]) -> List[Dict]:
 def get_tables_from_pdf_2(
     doc: Union[str, pymupdf.Document],
     pages: List[int] = None,
+    debug: bool = False,
 ) -> List[Table]:
     # Convert Document object to file path if needed
     if isinstance(doc, pymupdf.Document):
@@ -636,7 +637,8 @@ def get_tables_from_pdf_2(
     
     # Process headers
     headers = [get_headers_from_markdown(table["text"]) for table in total_tables]
-    
+    # Post process: remove Col1, Col2, Col3, etc.
+    headers = [[re.sub(r"^Col\d+", "", col) for col in header] for header in headers]
     # Retry logic for get_is_has_header
     for attempt in range(max_retries):
         res = get_is_has_header(headers)
@@ -649,6 +651,20 @@ def get_tables_from_pdf_2(
     for table, is_has in zip(total_tables, res["is_has_header"]):
         table["is_has_header"] = is_has
         
+    if debug:
+        for idx, table in enumerate(total_tables):
+            # print(table["text"])
+            print(f"Table {idx+1}:")
+            print(f"    Page: {table['page']}")
+            # print(f"Bbox: {table['bbox']}")
+            print(f"    N_rows: {table['n_rows']}")
+            print(f"    N_columns: {table['n_columns']}")
+            print(f"    Headers: {headers[idx]}")
+            print(f"    Is has header: {table['is_has_header']}")
+            print(f"    Is new section context: {table['is_new_section_context']}")
+            print(f"    Context before: {table['context_before']}")
+            print("-"*100)
+    
     return total_tables
 
 def find_spanned_table_groups(tables: List[Table]) -> List[List[Table]]:
@@ -763,10 +779,13 @@ def print_groups_summary(groups: List[List[Table]]) -> None:
             logger.info(f"  Nhóm {i}: Span {len(group)} bảng (Trang {min(pages)}-{max(pages)}, Cột: {cols})")
 
 
-def merge_tables(tables: List[Table]) -> MergedTable:
+def merge_tables(tables: List[Table], handle_merge_cell: bool = False) -> MergedTable:
     try:
         # Convert each table's markdown text to a DataFrame and fix merged rows
-        dfs = [fix_merged_row_df(convert_markdown_to_df(table["text"])) for table in tables]
+        if handle_merge_cell:
+            dfs = [fix_merged_row_df(convert_markdown_to_df(table["text"])) for table in tables]
+        else:
+            dfs = [convert_markdown_to_df(table["text"]) for table in tables]
         
         # Determine the maximum number of columns across all DataFrames
         max_cols = max(df.shape[1] for df in dfs)
@@ -875,7 +894,7 @@ def merge_tables(tables: List[Table]) -> MergedTable:
         )
 
 
-def full_pipeline(doc: Union[List[str], List[pymupdf.Document]], pages: List[int] = None) -> List[MergedTable]:
+def full_pipeline(doc: Union[List[str], List[pymupdf.Document]], pages: List[int] = None, handle_merge_cell: bool = False, debug: bool = False) -> List[MergedTable]:
     merged_tables = []
     
     # Convert single string to list if needed
@@ -894,13 +913,13 @@ def full_pipeline(doc: Union[List[str], List[pymupdf.Document]], pages: List[int
                 logger.info(f"Processing document: {d.name}")
             
             logger.info("   Extracting tables...")
-            tables = get_tables_from_pdf_2(d, pages)
+            tables = get_tables_from_pdf_2(d, pages, debug)
             logger.info("   Finding spanned table groups...")
             table_groups = find_spanned_table_groups(tables)
             print_groups_summary(table_groups)
             logger.info("   Merging tables...")
             for group in table_groups:
-                merged_table = merge_tables(group)
+                merged_table = merge_tables(group, handle_merge_cell)
                 merged_tables.append(merged_table)
             logger.info("   Processed document: Done!")
         except Exception as e:
@@ -913,13 +932,14 @@ def full_pipeline(doc: Union[List[str], List[pymupdf.Document]], pages: List[int
 
 if __name__ == "__main__":
     # Example usage with proper file path
-    source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/table_filter/input_pdfs/ccc3348504535e22aa44231e57052869.pdf"
+    # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/table_filter/input_pdfs/ccc3348504535e22aa44231e57052869.pdf"
+    source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/b014b8ca3c8ee543b655c29747cc6090.pdf"
     
     # Validate file exists before processing
     if not os.path.exists(source_path):
         logger.error(f"File not found: {source_path}")
     else:
-        merged_tables = full_pipeline(source_path)
+        merged_tables = full_pipeline(source_path, debug=True, handle_merge_cell=False)
         with open("test_output.md", "w", encoding="utf-8") as f:
             for table in merged_tables:
                 f.write(f"## Tables: {table['context_before']}\n\n")
