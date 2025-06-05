@@ -2,7 +2,7 @@ import os
 from google import genai
 from google.genai import types
 import json
-
+from typing import List
 
 
 def get_is_new_section_context(contexts):
@@ -10,12 +10,12 @@ def get_is_new_section_context(contexts):
         api_key=os.environ.get("GEMINI_API_KEY"),
     )
 
-    model = "gemini-2.0-flash-lite"
+    model = "gemini-2.0-flash"
     contents = [
         types.Content(
             role="user",
             parts=[
-                types.Part.from_text(text=str(contexts)),
+                types.Part.from_text(text="\n\n".join(contexts) + "\nNumber of contexts: " + str(len(contexts))),
             ],
         ),
     ]
@@ -35,27 +35,28 @@ def get_is_new_section_context(contexts):
             },
         ),
         system_instruction=[
-            types.Part.from_text(text="""Bạn là một chuyên gia phân tích cấu trúc tài liệu. Nhiệm vụ của bạn là xem xét một đoạn văn bản (CONTEXT_BEFORE) đứng ngay trước một bảng hoặc một mục, và xác định xem đoạn văn bản đó có chứa dấu hiệu rõ ràng cho thấy một phần (section), một mục hoặc một bảng mới sắp bắt đầu hay không.
+            types.Part.from_text(text="""You are an expert in document structure analysis. Your task is to examine a text segment (CONTEXT_BEFORE) that appears immediately before a table or section, and determine if it clearly indicates the start of a new section, item, or table.
 
-Bạn sẽ được cung cấp một danh sách (List) các chuỗi CONTEXT_BEFORE. Bạn cần trả về một danh sách (List) các giá trị boolean (True hoặc False) có cùng độ dài, trong đó mỗi giá trị boolean tương ứng với quyết định của bạn cho chuỗi CONTEXT_BEFORE ở vị trí tương ứng.
+You will be provided with a list of CONTEXT_BEFORE strings. You need to return a list of boolean values (True or False) of the same length, where each boolean corresponds to your decision for the CONTEXT_BEFORE at the respective position.
 
-Tiêu chí để quyết định True (Gợi ý mục/bảng mới):
-- Tiêu đề rõ ràng
-- Đề mục có cấu trúc
-- Ngữ cảnh giới thiệu
+Criteria for deciding True (Indicates new section/table):
+- Clear title
+- Structured heading
+- Introductory context
 
-Tiêu chí để quyết định False (KHÔNG gợi ý mục/bảng mới):
-- Chuỗi rỗng
-- Nội dung liền mạch
-- Không có cấu trúc tiêu đề
-- Chỉ là dữ liệu hoặc mô tả phụ
+Criteria for deciding False (Does NOT indicate new section/table):
+- Empty string
+- Seamless content
+- No structured heading
+- Just data or supplementary description
 
-Yêu cầu:
+Requirements:
 
-Hãy phân tích cẩn thận từng CONTEXT_BEFORE trong danh sách đầu vào.
-Áp dụng các tiêu chí trên để đưa ra quyết định True hoặc False cho mỗi context.
-Luôn trả về False cho các giá trị CONTEXT_BEFORE rỗng.
-Trả về kết quả dưới dạng một danh sách các giá trị boolean."""),
+- Carefully analyze each CONTEXT_BEFORE in the input list.
+- Apply the above criteria to decide True or False for each context.
+- Always return False for empty CONTEXT_BEFORE values.
+- Return the result as a list of boolean values.
+- Always return a complete list of boolean values for the input list."""),
         ],
     )
 
@@ -68,17 +69,17 @@ Trả về kết quả dưới dạng một danh sách các giá trị boolean."
 
 
 
-def get_is_has_header(rows):
+def get_is_has_header(rows: List[List[str]]):
     client = genai.Client(
         api_key=os.environ.get("GEMINI_API_KEY"),
     )
 
-    model = "gemini-2.0-flash-lite"
+    model = "gemini-2.0-flash"
     contents = [
         types.Content(
             role="user",
             parts=[
-                types.Part.from_text(text=str(rows)),
+                types.Part.from_text(text="\n\n".join("\t".join(row) for row in rows) + "\nNumber of elements: " + str(len(rows))),
             ],
         ),
     ]
@@ -97,29 +98,29 @@ def get_is_has_header(rows):
             },
         ),
         system_instruction=[
-            types.Part.from_text(text="""Bạn là một chuyên gia phân tích cấu trúc dữ liệu dạng bảng. Nhiệm vụ của bạn là xem xét từng \"dòng\" (row) được cung cấp và xác định xem dòng đó có phải là một dòng tiêu đề (header) có ý nghĩa hay không. Một dòng tiêu đề có ý nghĩa là dòng chứa các tên cột mô tả loại dữ liệu sẽ xuất hiện trong các cột đó ở các dòng tiếp theo, chứ không phải là một dòng chứa dữ liệu cụ thể.
+            types.Part.from_text(text="""You are an expert in analyzing table data structures. Your task is to examine each provided "row" and determine if it is a meaningful header row. A meaningful header row contains column names that describe the type of data that will appear in those columns in subsequent rows, rather than specific data.
 
-Bạn sẽ nhận được một danh sách (List) các dòng. Mỗi dòng trong danh sách này lại là một danh sách (List) các chuỗi ký tự (string), trong đó mỗi chuỗi đại diện cho nội dung của một ô (cell) trong dòng đó.
+You will receive a list of rows. Each row in this list is itself a list of strings, where each string represents the content of a cell in that row.
 
-Bạn cần trả về một danh sách (List) các giá trị boolean (True hoặc False) có cùng độ dài với danh sách dòng đầu vào. Giá trị True có nghĩa là dòng tương ứng LÀ một header có ý nghĩa, và False có nghĩa là KHÔNG PHẢI.
+You need to return a list of boolean values (True or False) of the same length as the input list of rows. A value of True means the corresponding row IS a meaningful header, and False means it is NOT.
 
-Tiêu chí để xác định một dòng là Header có ý nghĩa (True):
-- Tiêu chí để xác định một dòng là Header có ý nghĩa (True)
-- Cấu trúc mô tả, không phải dữ liệu cụ thể
-- Sử dụng tên cột chung chung
-- Thường ngắn gọn và mang tính danh mục
-- Không bắt đầu bằng dữ liệu số thứ tự hoặc ID cụ thể
+Criteria for determining a row as a meaningful Header (True):
+- Descriptive structure, not specific data
+- Uses generic column names
+- Typically concise and categorical
+- Does not start with specific ordinal data or ID
 
-Tiêu chí để xác định một dòng KHÔNG PHẢI là Header có ý nghĩa (False):
-- Chứa dữ liệu cụ thể
-- Bắt đầu bằng số thứ tự hoặc giá trị dữ liệu
-- Là một câu hoàn chỉnh hoặc đoạn văn mô tả dài
+Criteria for determining a row is NOT a meaningful Header (False):
+- Contains specific data
+- Starts with ordinal or data value
+- Is a complete sentence or long descriptive paragraph
 
-Lưu ý quan trọng:
+Important notes:
 
-Sự hiện diện của tag HTML như <br> không làm thay đổi bản chất của ô là header hay data.
-Đôi khi header có thể bị ngắt quãng hoặc có lỗi định dạng nhỏ (ví dụ: \"Title D\", \"irected by\"), hãy cố gắng nhận diện dựa trên các từ khóa chính và cấu trúc tổng thể.
-Phân tích cẩn thận từng dòng một."""),
+- The presence of HTML tags like <br> does not change the nature of a cell being a header or data.
+- Sometimes headers may be interrupted or have minor formatting errors (e.g., "Title D", "irected by"), try to identify based on key terms and overall structure.
+- Always return enough boolean values for the input list.
+- Carefully analyze each row one by one."""),
         ],
     )
 
