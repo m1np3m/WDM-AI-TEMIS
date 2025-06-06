@@ -33,3 +33,4 @@ data/raw/
 data/processed/
 data/pdfs/
 gdsc2025-74596a254ab4.json
+qdrant_client_memory/

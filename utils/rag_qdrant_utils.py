@@ -86,7 +86,6 @@ def add_documents(client, collection_name, documents, chunk_size, chunk_overlap,
             docs_contents.append(doc.page_content)
             docs_metadatas.append(doc.metadata)
         else:
-            # Handle the case where attributes are missing
             print("Warning: Some documents do not have 'page_content' or 'metadata' attributes.")
 
     client.set_model(embedding_model_name=embedding_model_name)
@@ -104,5 +103,5 @@ def get_documents(client, collection_name, query, embedding_model, num_documents
         query_text=query,
         limit=num_documents,
     )
-    results = [r.page_content for r in search_results]
+    results = [r.metadata['document'] for r in search_results]
     return results
