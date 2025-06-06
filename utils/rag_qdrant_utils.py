@@ -4,10 +4,9 @@ from langchain.docstore.document import Document as LangchainDocument
 import os
 import json
 import fitz  
-data_dir = os.getenv("DATA_DIR", "data")
-def summarize_table():
+def summarize_table(folder_path):
     summary_documents = []
-    tables_sources = json.load(open(f"{data_dir}/pdf/final_tables.json"))
+    tables_sources = json.load(open(f"{folder_path}/final_tables.json", 'r', encoding='utf-8'))
     sources = list(tables_sources.keys())
     for source in sources:
         for table in tables_sources[source]:
@@ -58,7 +57,7 @@ def process_all_pdfs_in_folder(folder_path):
             print(f"\n>>> Đang xử lý: {pdf_path}")
             page_docs = get_detail_chunks(pdf_path)
             all_page_documents.extend(page_docs)
-            table_docs = summarize_table()
+            table_docs = summarize_table(folder_path)
             all_table_documents.extend(table_docs)
 
     return all_page_documents, all_table_documents
@@ -87,7 +86,6 @@ def add_documents(client, collection_name, documents, chunk_size, chunk_overlap,
             docs_contents.append(doc.page_content)
             docs_metadatas.append(doc.metadata)
         else:
-            # Handle the case where attributes are missing
             print("Warning: Some documents do not have 'page_content' or 'metadata' attributes.")
 
     client.set_model(embedding_model_name=embedding_model_name)
@@ -105,5 +103,5 @@ def get_documents(client, collection_name, query, embedding_model, num_documents
         query_text=query,
         limit=num_documents,
     )
-    results = [r.page_content for r in search_results]
+    results = [r.metadata['document'] for r in search_results]
     return results

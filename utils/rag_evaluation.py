@@ -1,5 +1,5 @@
 import pandas as pd
-from datasets import Dataset
+# from datasets import Dataset
 from ragas.evaluation import Dataset
 from ragas.evaluation import evaluate
 from ragas.metrics import (
@@ -16,50 +16,13 @@ import requests
 import json
 import matplotlib.pyplot as plt
 from .rag_metrics import *
-def generate_model_output(user_query, documents):
-    """
-    Gửi prompt đến Ollama và nhận về một đoạn phản hồi hoàn chỉnh.
-    
-    Tham số:
-        prompt (str): Câu hỏi hoặc yêu cầu bạn muốn gửi đến mô hình.
-
-    Trả về:
-        str: Phản hồi hoàn chỉnh từ mô hình.
-    """
-    full_response = ""
-    context = f"""
-   You are an assistant can  answer questions based on the content of documents and filter information to give the best answer.
-    Here are some document fragments retrieved from a PDF document:
-    {documents}
-    Please concatenate all the table parts below row by row into one single table, making sure they form a single table. The result should be the concatenated table and any completely separate tables remaining.
-    {user_query}
-        """
-    url = "http://localhost:11434/api/generate"
-    payload = {
-        "model": "llama3.2:latest",
-        "prompt": context,
-        "stream": True
-    }
-
-    with requests.post(url, json=payload, stream=True) as response:
-        for line in response.iter_lines():
-            if line:
-                try:
-                    data = json.loads(line)
-                    if 'response' in data:
-                        chunk = data['response']
-                        full_response += chunk
-                    if data.get('done', False):
-                        break
-                except json.JSONDecodeError:
-                    continue  
-
-    return full_response.strip()
 
 def run_ragas_eval(
+    client,
     eval_df,
     collection_name,
     doc_retrieval_function,
+    generate_model_output,
     embedding_model_name,
     num_docs=5,
     path="ragas_eval.csv"
@@ -67,7 +30,7 @@ def run_ragas_eval(
     eval_df = eval_df.rename(columns={"question": "input", "answer": "ground_truth"})
 
     eval_df['contexts'] = eval_df['input'].apply(
-        lambda q: doc_retrieval_function(collection_name, q, embedding_model_name, num_documents=num_docs)
+        lambda q: doc_retrieval_function(client, collection_name, q, embedding_model_name, num_documents=num_docs)
     )
 
     if 'output' not in eval_df.columns:
@@ -94,15 +57,13 @@ def run_ragas_eval(
             answer_similarity,
             context_precision,
             context_recall,
-            BleuScore(),
-            RougeScore(),
         ]
     )
 
     df_results = results.to_pandas()
-    df_results.to_csv(path, index=False)
     df_results['hit_rate'] = calculate_hit_rate(eval_df)
     df_results['mrr'] = calculate_mrr(eval_df)
+    df_results.to_csv(path, index=False)
 
     print("Evaluation completed. Results saved to", path)
     return df_results
