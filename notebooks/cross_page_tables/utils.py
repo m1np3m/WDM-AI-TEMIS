@@ -2,13 +2,16 @@ import json
 import os
 from typing import List
 
-import google.auth
 from google import genai
 from google.genai import types
 from google.oauth2 import service_account
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # To use model
-credentials_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/unlimited-461914-00c45fbd38d5.json"
+credentials_path = os.getenv("CREDENTIALS_PATH")
+project_id = os.getenv("VERTEXAI_PROJECT_ID")
 
 # Set up credentials with proper scopes for Vertex AI
 scopes = [
@@ -20,84 +23,11 @@ credentials = service_account.Credentials.from_service_account_file(
     credentials_path, scopes=scopes
 )
 
-# Alternative: Use application default credentials if preferred
-# credentials, project = google.auth.default(scopes=scopes)
-
-# def get_is_new_section_context(contexts: List[str]):
-#     client = genai.Client(
-#         api_key=os.environ.get("GEMINI_API_KEY"),
-#     )
-
-#     model = "gemini-2.0-flash"
-
-#     # Format contexts with clear indexing
-#     formatted_contexts = []
-#     for i, context in enumerate(contexts, 1):
-#         formatted_contexts.append(f"Context {i}:\n{context.strip() if context.strip() else '[EMPTY]'}")
-
-#     contexts_text = "\n\n".join(formatted_contexts)
-
-#     contents = [
-#         types.Content(
-#             role="user",
-#             parts=[
-#                 types.Part.from_text(text=f"### List of Contexts Before Tables:\n\n{contexts_text}\n\n### Total number of contexts: {len(contexts)}"),
-#             ],
-#         ),
-#     ]
-#     generate_content_config = types.GenerateContentConfig(
-#         temperature=0,
-#         response_mime_type="application/json",
-#         response_schema=genai.types.Schema(
-#             type = genai.types.Type.OBJECT,
-#             required = ["is_new_section_context"],
-#             properties = {
-#                 "is_new_section_context": genai.types.Schema(
-#                     type = genai.types.Type.ARRAY,
-#                     items = genai.types.Schema(
-#                         type = genai.types.Type.BOOLEAN,
-#                     ),
-#                 ),
-#             },
-#         ),
-#         system_instruction=[
-#             types.Part.from_text(text="""You are an expert in document structure analysis. Your task is to examine text segments that appear immediately before tables or sections, and determine if they clearly indicate the start of a new section, item, or table.
-
-# You will be provided with a numbered list of contexts (Context 1, Context 2, etc.). Each context is the text that appears immediately before a table in a document. You need to return a list of boolean values (True or False) of the same length, where each boolean corresponds to your decision for the context at the respective position (Context 1 → first boolean, Context 2 → second boolean, etc.).
-
-# Criteria for deciding True (Indicates new section/table):
-# - Clear title or heading
-# - Structured heading (e.g., "Chapter 1", "Section A", "Table 1: ...")
-# - Introductory context that clearly introduces a new topic/section
-
-# Criteria for deciding False (Does NOT indicate new section/table):
-# - Empty context (marked as [EMPTY])
-# - Seamless content continuation from previous text
-# - No structured heading or title
-# - Just data or supplementary description
-# - Fragment of previous content
-
-# Requirements:
-# - Analyze each numbered context individually
-# - Apply the above criteria to decide True or False for each context
-# - Always return False for [EMPTY] contexts
-# - Return the result as a list of boolean values in the same order as the input contexts
-# - The output list must have exactly the same length as the input list"""),
-#         ],
-#     )
-
-#     res =  client.models.generate_content(
-#         model=model,
-#         contents=contents,
-#         config=generate_content_config,
-#     )
-#     return json.loads(res.text)
-
 
 def get_is_new_section_context(contexts: List[str], return_prompt: bool = False):
     client = genai.Client(
         vertexai=True,
-        project="unlimited-461914",
+        project=project_id,
         location="us-central1",  # Changed from "global" to a specific region
         credentials=credentials,
     )
@@ -143,11 +73,7 @@ def get_is_new_section_context(contexts: List[str], return_prompt: bool = False)
     contents = [
         types.Content(
             role="user",
-            parts=[
-                types.Part.from_text(
-                    text=input_text
-                )
-            ],
+            parts=[types.Part.from_text(text=input_text)],
         ),
     ]
 
@@ -189,10 +115,12 @@ def get_is_new_section_context(contexts: List[str], return_prompt: bool = False)
     return json.loads(res.text)
 
 
-def get_is_has_header(rows: List[List[str]], first_3_rows: List[str], return_prompt: bool = False):
+def get_is_has_header(
+    rows: List[List[str]], first_3_rows: List[str], return_prompt: bool = False
+):
     client = genai.Client(
         vertexai=True,
-        project="unlimited-461914",
+        project=project_id,
         location="us-central1",  # Changed from "global" to a specific region
         credentials=credentials,
         #
@@ -212,28 +140,24 @@ def get_is_has_header(rows: List[List[str]], first_3_rows: List[str], return_pro
             header_text = " | ".join(formatted_cells)
         else:
             header_text = "[NO_HEADER_EXTRACTED]"
-        
+
         # Format table context (first 3 rows in markdown)
         table_preview = table_context.strip() if table_context else "[EMPTY_TABLE]"
-        
+
         formatted_table = f"""\nTable {i}:
 Header Row: {header_text}
 Table Preview (First 3 rows):
 {table_preview}"""
-        
+
         formatted_tables.append(formatted_table)
 
-    tables_text = "\n\n" + "="*50 + "\n\n".join(formatted_tables)
+    tables_text = "\n\n" + "=" * 50 + "\n\n".join(formatted_tables)
 
     input_text = f"\n\n### Tables Analysis:\n{tables_text}\n\n### Total number of tables: {len(rows)}"
     contents = [
         types.Content(
             role="user",
-            parts=[
-                types.Part.from_text(
-                    text=input_text
-                )
-            ],
+            parts=[types.Part.from_text(text=input_text)],
         ),
     ]
 
@@ -310,3 +234,36 @@ A meaningful header row contains column names that describe the type of data tha
     if return_prompt:
         return json.loads(res.text), si_text + input_text
     return json.loads(res.text)
+
+
+if __name__ == "__main__":
+    ### TESTING CASES
+
+    print("TEST CONTEXT BEFORE TABLE")
+
+    contexts = [
+        "Table 2: Population by continent (2023 estimate)",
+        "Bảng 3: Danh sách các trường đại học hàng đầu thế giới",
+        "The quick brown fox jumps over the lazy dog.",
+        "Yesterday, it rained heavily in the city center.",
+    ]
+
+    rows1 = [
+        ["Year", "Population", "Continent"],
+        ["2023", "7.9 billion", "Asia"],
+    ]
+
+    first_3_rows1 = [
+        "| Year | Population | Continent |\n| 2023 | 7.9 billion | Asia |\n| 2022 | 7.8 billion | Africa |",
+        "|2023 | 7.9 billion | Asia |\n|2022 | 7.8 billion | Africa |",
+    ]
+
+    res, prompt = get_is_new_section_context(contexts, return_prompt=True)
+    print("=====\tPrompt====\n", prompt)
+    print("=====\tResult====\n", res)
+
+    res, prompt = get_is_has_header(rows1, first_3_rows1, return_prompt=True)
+    print("=====\tPrompt====\n", prompt)
+    print("=====\tResult====\n", res)
+
+    print("=====\tTESTING CASES END====\n")

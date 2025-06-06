@@ -1,14 +1,12 @@
 import os
 import re
 from io import StringIO
-from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union
-import numpy as np
 from multiprocessing import Pool, cpu_count
-from functools import partial
+from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union
 
+import numpy as np
 import pandas as pd
 import pymupdf  # PyMuPDF
-import pymupdf4llm
 from loguru import logger
 from markdown import markdown
 from tqdm import tqdm
@@ -64,11 +62,12 @@ def get_headers_from_markdown(markdown_text: str) -> List[str]:
     return headers
 
 
-def solve_non_header_table(df: pd.DataFrame, target_headers: List[str]) -> pd.DataFrame:
+def solve_non_header_table(df: pd.DataFrame, target_headers: List[str], log: bool = False) -> pd.DataFrame:
     if not isinstance(target_headers, list):
-        logger.warning(
-            "Warning: target_headers không phải là list. Trả về DataFrame gốc."
-        )
+        if log:
+            logger.warning(
+                "Warning: target_headers không phải là list. Trả về DataFrame gốc."
+            )
         return df.copy()
     df_copy = df.copy()
     first_row_data_values: List[Any] = []
@@ -102,7 +101,8 @@ def solve_non_header_table(df: pd.DataFrame, target_headers: List[str]) -> pd.Da
     result_df = pd.concat([new_first_row_df, df_copy], ignore_index=True)
     return result_df.reset_index(drop=True)
 
-def split_markdown_into_tables(markdown_text, debug=False):
+
+def split_markdown_into_tables(markdown_text, log: bool = False):
     """
     Splits a single string containing multiple Markdown tables into a list of strings,
     where each string represents a separate table. Tables are assumed to be
@@ -111,7 +111,7 @@ def split_markdown_into_tables(markdown_text, debug=False):
     Args:
         markdown_text (str): The input string potentially containing multiple
                              Markdown tables.
-        debug (bool): If True, enables detailed debug logging during the process.
+        log (bool): If True, enables detailed debug logging during the process.
                       Defaults to False.
 
     Returns:
@@ -121,7 +121,7 @@ def split_markdown_into_tables(markdown_text, debug=False):
     """
     # Initial check for empty or whitespace-only input.
     if not markdown_text or not markdown_text.strip():
-        if debug:
+        if log:
             logger.debug(
                 "Input markdown_text is empty or consists only of whitespace. Returning an empty list."
             )
@@ -134,7 +134,7 @@ def split_markdown_into_tables(markdown_text, debug=False):
 
     # If stripping results in an empty string (e.g., input was just "\n\n\n" or similar).
     if not stripped_text:
-        if debug:
+        if log:
             logger.debug(
                 "Input markdown_text became empty after stripping. Returning an empty list."
             )
@@ -145,7 +145,7 @@ def split_markdown_into_tables(markdown_text, debug=False):
     potential_table_blocks = re.split(r"\n{2,}", stripped_text)
 
     extracted_tables = []
-    if debug:
+    if log:
         logger.debug(
             f"Split input into {len(potential_table_blocks)} potential block(s). Now validating each block..."
         )
@@ -159,7 +159,7 @@ def split_markdown_into_tables(markdown_text, debug=False):
         # and should start with the pipe character ('|').
         if cleaned_block and cleaned_block.startswith("|"):
             extracted_tables.append(cleaned_block)
-            if debug:
+            if log:
                 # Provide a preview of the extracted table for debugging purposes.
                 # Replacing newlines with '↵' for a compact log preview.
                 preview = cleaned_block[:70].replace("\n", "↵")
@@ -168,7 +168,7 @@ def split_markdown_into_tables(markdown_text, debug=False):
                 logger.debug(
                     f"Block {i + 1}: Valid table extracted (length: {len(cleaned_block)} chars). Preview: '{preview}'"
                 )
-        elif cleaned_block and debug:
+        elif cleaned_block and log:
             # Log if a non-empty block was discarded because it didn't meet the table criteria.
             preview = cleaned_block[:70].replace("\n", "↵")
             if len(cleaned_block) > 70:
@@ -177,14 +177,14 @@ def split_markdown_into_tables(markdown_text, debug=False):
                 f"Block {i + 1}: Discarded (length: {len(cleaned_block)} chars) as it does not start with '|' "
                 f"after stripping. Preview: '{preview}'"
             )
-        elif not cleaned_block and debug:
+        elif not cleaned_block and log:
             # Log if a block (after stripping) was empty.
             # This should be less common if `stripped_text` itself is not empty.
             logger.debug(
                 f"Block {i + 1}: Discarded as it was empty after stripping individual block whitespace."
             )
 
-    if debug:
+    if log:
         logger.info(f"Finished processing. Extracted {len(extracted_tables)} table(s).")
 
     return extracted_tables
@@ -203,7 +203,7 @@ def get_context_before_table(
     prev_page_all_table_bboxes: Optional[
         List[Tuple[float, float, float, float]]
     ] = None,
-    debug: bool = False,
+    log: bool = False,
 ) -> str:
     """
     Tìm văn bản ngữ cảnh đứng ngay trước một bảng đã cho.
@@ -220,13 +220,13 @@ def get_context_before_table(
         search_bottom_pixels_on_prev_page (float): Xác định chiều cao vùng ở cuối trang trước sẽ được quét.
         prev_page_all_table_bboxes (Optional[List[Tuple]]): Danh sách các bbox của tất cả bảng trên trang trước.
                                                             Nếu được cung cấp, ngữ cảnh sẽ được tìm *sau* bảng cuối cùng đó.
-        debug (bool): Bật ghi log chi tiết.
+        log (bool): Bật ghi log chi tiết.
 
     Returns:
         str: Chuỗi văn bản ngữ cảnh được nối lại, hoặc chuỗi rỗng nếu không tìm thấy.
     """
     if not doc or not (0 <= table_page_num_0_indexed < len(doc)):
-        if debug:
+        if log:
             logger.error(
                 f"Tài liệu không hợp lệ hoặc số trang không hợp lệ: {table_page_num_0_indexed}."
             )
@@ -309,18 +309,18 @@ def get_context_before_table(
             if current_page_context_list:
                 final_context_parts.append("\n".join(current_page_context_list))
 
-            if debug and current_page_context_list:
+            if log and current_page_context_list:
                 logger.debug(
                     f"Ngữ cảnh tìm thấy trên cùng trang (P{table_page_num_0_indexed + 1}) "
                     f"trước bảng tại y={ty0:.2f}:\n'{final_context_parts[-1]}'"
                 )
-            elif debug:
+            elif log:
                 logger.debug(
                     f"Không có ngữ cảnh phù hợp trên cùng trang (P{table_page_num_0_indexed + 1})."
                 )
 
     except Exception as e_same_page:
-        if debug:
+        if log:
             logger.error(
                 f"Lỗi khi xử lý cùng trang {table_page_num_0_indexed + 1} để tìm ngữ cảnh: {e_same_page}"
             )
@@ -335,7 +335,7 @@ def get_context_before_table(
         prev_page_num = table_page_num_0_indexed - 1
         try:
             prev_page = doc.load_page(prev_page_num)
-            if debug:
+            if log:
                 logger.debug(
                     f"Không có ngữ cảnh trên P{table_page_num_0_indexed + 1}. "
                     f"Đang thử tìm ở cuối trang trước (P{prev_page_num + 1})."
@@ -361,7 +361,7 @@ def get_context_before_table(
                 search_y_start_prev_page = max(
                     search_y_start_prev_page, bottom_of_last_table_on_prev + 1e-4
                 )
-                if debug:
+                if log:
                     logger.debug(
                         f"Trang trước: tìm kiếm văn bản sau y={search_y_start_prev_page:.2f} (sau bảng cuối cùng / vùng cuối trang)."
                     )
@@ -417,18 +417,18 @@ def get_context_before_table(
                     # Nối ngữ cảnh từ trang trước vào *trước* ngữ cảnh (nếu có) từ trang hiện tại.
                     # Vì hiện tại final_context_parts đang rỗng, nên đây sẽ là ngữ cảnh duy nhất.
                     final_context_parts = prev_page_context_list
-                    if debug:
+                    if log:
                         context_text = "\n".join(prev_page_context_list)
                         logger.debug(
                             f"Ngữ cảnh tìm thấy ở cuối trang trước (P{prev_page_num + 1}):\n'{context_text}'"
                         )
-                elif debug:
+                elif log:
                     logger.debug(
                         f"Không có ngữ cảnh phù hợp ở cuối trang trước (P{prev_page_num + 1})."
                     )
 
         except Exception as e_prev_page:
-            if debug:
+            if log:
                 logger.error(
                     f"Lỗi khi xử lý trang trước {prev_page_num + 1} để tìm ngữ cảnh: {e_prev_page}"
                 )
@@ -444,11 +444,11 @@ def get_context_before_table(
             0
         ]  # Vì chúng ta chỉ điền một khối văn bản (từ cùng trang hoặc trang trước)
 
-    if debug and not final_result_text:
+    if log and not final_result_text:
         logger.info(
             f"Không tìm thấy ngữ cảnh nào cho bảng tại trang {table_page_num_0_indexed + 1} (bbox: {table_bbox})."
         )
-    elif debug and final_result_text:
+    elif log and final_result_text:
         logger.info(
             f"Ngữ cảnh cuối cùng cho bảng tại trang {table_page_num_0_indexed + 1}:\n-----\n{final_result_text}\n-----"
         )
@@ -456,15 +456,15 @@ def get_context_before_table(
     return final_result_text.strip()
 
 
-
 def convert_markdown_to_df(markdown_text: str) -> pd.DataFrame:
-    html_table = markdown(markdown_text, extensions=['markdown.extensions.tables'])
+    html_table = markdown(markdown_text, extensions=["markdown.extensions.tables"])
     dfs = pd.read_html(StringIO(f"<table>{html_table}</table>"))
     if dfs:
         df = dfs[0]
     else:
         print("Không tìm thấy bảng nào.")
     return df
+
 
 def fix_merged_row(df_col1, df_col2) -> pd.Series:
     def find_consecutive_true_indices(series):
@@ -485,30 +485,34 @@ def fix_merged_row(df_col1, df_col2) -> pd.Series:
 
     # Create a copy of df_col2 to avoid SettingWithCopyWarning
     result = df_col2.copy()
-    
+
     for group in find_consecutive_true_indices(df_col1 == df_col2):
         if group[0] > 0:
             # Use loc instead of iloc for explicit indexing
             result.loc[group] = result.iloc[group[0] - 1]
     return result
 
+
 def fix_merged_row_df(df: pd.DataFrame) -> pd.DataFrame:
     test_df = df.copy()
     n_cols = test_df.shape[1]
 
     for i in range(1, n_cols - 1):
-        test_df.iloc[:, i + 1] = fix_merged_row(test_df.iloc[:, i], test_df.iloc[:, i + 1])
+        test_df.iloc[:, i + 1] = fix_merged_row(
+            test_df.iloc[:, i], test_df.iloc[:, i + 1]
+        )
 
     return test_df
 
 
-def process_single_page(page_info: Tuple[int, str, str]) -> List[Dict]:
+def process_single_page(page_info: Tuple[int, str, str], log: bool = False) -> List[Dict]:
     """
     Process a single page of the PDF document to extract tables.
-    
+
     Args:
         page_info: Tuple containing (page_idx, pdf_path, source)
-        
+        log (bool): If True, enables logging.
+
     Returns:
         List of table objects found on the page
     """
@@ -519,14 +523,14 @@ def process_single_page(page_info: Tuple[int, str, str]) -> List[Dict]:
         page = doc.load_page(page_idx)
         tables = page.find_tables(strategy="lines_strict").tables
         page_tables = []
-        
+
         if tables:
             for table in tables:
                 bbox = table.bbox
                 n_rows = table.row_count
                 n_columns = table.col_count
                 text = table.to_markdown()
-                
+
                 table_obj = {
                     "text": text,
                     "page": page_idx + 1,
@@ -538,13 +542,15 @@ def process_single_page(page_info: Tuple[int, str, str]) -> List[Dict]:
                     "is_new_section_context": False,
                 }
                 page_tables.append(table_obj)
-        
+
         # Close document in this process
         doc.close()
         return page_tables
     except Exception as e:
-        logger.error(f"Error processing page {page_idx + 1}: {str(e)}")
+        if log:
+            logger.error(f"Error processing page {page_idx + 1}: {str(e)}")
         return []
+
 
 def get_n_rows_from_markdown(markdown_text: str, n_rows: int) -> str:
     """
@@ -582,7 +588,7 @@ def get_n_rows_from_markdown(markdown_text: str, n_rows: int) -> str:
     # Always include header and separator
     result_lines = table_lines[:2]
     # Add up to n_rows-1 data rows (since header is already included)
-    data_lines = table_lines[2:2 + max(0, n_rows - 1)]
+    data_lines = table_lines[2 : 2 + max(0, n_rows - 1)]
     result_lines += data_lines
 
     # Remove Col1, Col2, Col3, ... from the start of each cell in every line
@@ -592,13 +598,13 @@ def get_n_rows_from_markdown(markdown_text: str, n_rows: int) -> str:
         if "|" in line:
             # Remove Col\d+ at the start of each cell (after | or at start)
             # This regex replaces occurrences of Col\d+ at the start of a cell
-            cleaned = re.sub(r'(\||^)\s*Col\d+\s*', r'\1', line)
+            cleaned = re.sub(r"(\||^)\s*Col\d+\s*", r"\1", line)
             cleaned_lines.append(cleaned)
         else:
             cleaned_lines.append(line)
 
     return "\n".join(cleaned_lines)
-    
+
 
 def get_tables_from_pdf_2(
     doc: Union[str, pymupdf.Document],
@@ -613,52 +619,55 @@ def get_tables_from_pdf_2(
     else:
         pdf_path = doc
         doc = pymupdf.open(pdf_path)
-    
+
     source = get_pdf_name(pdf_path)
     if pages is None:
         pages = list(range(1, doc.page_count + 1))
-    
+
     # Close the document after getting page count
     doc.close()
-    
+
     # Prepare page info for parallel processing
     page_infos = [(page - 1, pdf_path, source) for page in pages]
-    
+
     # Determine number of processes (use 75% of available CPU cores)
     n_processes = max(1, int(cpu_count() * 0.75))
-    logger.info(f"Using {n_processes} processes for parallel processing")
-    
+    if debug:
+        logger.info(f"Using {n_processes} processes for parallel processing")
+
     # Process pages in parallel
     total_tables = []
     with Pool(processes=n_processes) as pool:
         # Use tqdm to show progress
-        results = list(tqdm(
-            pool.imap(process_single_page, page_infos),
-            total=len(page_infos),
-            desc="Processing pages"
-        ))
-    
+        results = list(
+            tqdm(
+                pool.imap(process_single_page, page_infos),
+                total=len(page_infos),
+                desc="Processing pages",
+            )
+        )
+
     # Combine results from all pages
     for page_tables in results:
         total_tables.extend(page_tables)
-    
+
     # Sort tables by page number and vertical position
     total_tables.sort(key=lambda t: (t["page"], t["bbox"][1]))
-    
+
     # Reopen document for context processing
     doc = pymupdf.open(pdf_path)
-    
+
     # Process contexts for all tables
     for i, table in enumerate(total_tables):
         target_table_page_0_indexed = table["page"] - 1
         actual_prev_page_0_indexed = target_table_page_0_indexed - 1
         filtered_prev_page_table_bboxes = []
-        
+
         if actual_prev_page_0_indexed >= 0:
             for t_prev in total_tables:
                 if t_prev["page"] - 1 == actual_prev_page_0_indexed:
                     filtered_prev_page_table_bboxes.append(t_prev["bbox"])
-        
+
         context = get_context_before_table(
             doc=doc,
             table_page_num_0_indexed=target_table_page_0_indexed,
@@ -666,52 +675,70 @@ def get_tables_from_pdf_2(
             prev_page_all_table_bboxes=filtered_prev_page_table_bboxes,
         )
         total_tables[i]["context_before"] = context
-    
+
     # Close document after context processing
     doc.close()
-    
+
     # Process contexts for new section detection
     contexts = [
         (i, table["context_before"])
         for i, table in enumerate(total_tables)
         if table["context_before"] != ""
     ]
-    
+
     # Retry logic for get_is_new_section_context
     max_retries = 5
     for attempt in range(max_retries):
-        res, prompt_contexts = get_is_new_section_context([context for _, context in contexts], return_prompt=True)
+        res, prompt_contexts = get_is_new_section_context(
+            [context for _, context in contexts], return_prompt=True
+        )
         if len(res["is_new_section_context"]) == len(contexts):
             break
-        logger.warning(f"Retry {attempt + 1}/{max_retries} for get_is_new_section_context due to length mismatch.")
+        if debug:
+            logger.warning(
+                f"Retry {attempt + 1}/{max_retries} for get_is_new_section_context due to length mismatch."
+            )
     else:
-        logger.error("Failed to get correct response length from get_is_new_section_context after retries.")
-    
+        if debug:
+            logger.error(
+                "Failed to get correct response length from get_is_new_section_context after retries."
+            )
+
     for (i, _), is_new in zip(contexts, res["is_new_section_context"]):
         total_tables[i]["is_new_section_context"] = is_new
-    
+
     # Process headers
     headers = [get_headers_from_markdown(table["text"]) for table in total_tables]
     # Post process: remove Col1, Col2, Col3, etc.
     headers = [[re.sub(r"^Col\d+", "", col) for col in header] for header in headers]
     # Retry logic for get_is_has_header
-    
-    first_3_rows = [get_n_rows_from_markdown(table["text"], 3) for table in total_tables]
+
+    first_3_rows = [
+        get_n_rows_from_markdown(table["text"], 3) for table in total_tables
+    ]
     for attempt in range(max_retries):
-        res, prompt_headers = get_is_has_header(headers, first_3_rows, return_prompt=True)
+        res, prompt_headers = get_is_has_header(
+            headers, first_3_rows, return_prompt=True
+        )
         if len(res["is_has_header"]) == len(headers):
             break
-        logger.warning(f"Retry {attempt + 1}/{max_retries} for get_is_has_header due to length mismatch.")
+        if debug:
+            logger.warning(
+                f"Retry {attempt + 1}/{max_retries} for get_is_has_header due to length mismatch."
+            )
     else:
-        logger.error("Failed to get correct response length from get_is_has_header after retries.")
-    
+        if debug:
+            logger.error(
+                "Failed to get correct response length from get_is_has_header after retries."
+            )
+
     for table, is_has in zip(total_tables, res["is_has_header"]):
         table["is_has_header"] = is_has
-        
+
     if debug:
         for idx, table in enumerate(total_tables):
             if debug_level >= 1:
-                print(f"Table {idx+1}:")
+                print(f"Table {idx + 1}:")
                 print(f"    Page: {table['page']}")
                 # print(f"Bbox: {table['bbox']}")
                 print(f"    N_rows: {table['n_rows']}")
@@ -721,132 +748,148 @@ def get_tables_from_pdf_2(
                 print(f"    Is new section context: {table['is_new_section_context']}")
                 print(f"    Context before: {table['context_before']}")
                 # print(f"    Text: {table['text']}")
-                print("-"*100)
+                print("-" * 100)
         if debug_level >= 2:
-            print(f"CONTEXTS PROMPT:\n{prompt_contexts}\n\nHEADERS PROMPT:\n{prompt_headers}")
-    
+            print(
+                f"CONTEXTS PROMPT:\n{prompt_contexts}\n\nHEADERS PROMPT:\n{prompt_headers}"
+            )
+
     return total_tables
+
 
 def find_spanned_table_groups(tables: List[Table]) -> List[List[Table]]:
     """
     Tìm các nhóm bảng kéo dài qua nhiều trang (span multipage).
-    
+
     Args:
         tables: Danh sách các bảng đã được sắp xếp theo thứ tự xuất hiện trong tài liệu
-        
+
     Returns:
         Danh sách các nhóm bảng, mỗi nhóm là một list các bảng liên tục
     """
     if not tables:
         return []
-    
+
     # Sắp xếp tables theo page và position nếu chưa được sắp xếp
-    sorted_tables = sorted(tables, key=lambda t: (t['page'], t['bbox'][1]))  # sort by page and y-coordinate
-    
+    sorted_tables = sorted(
+        tables, key=lambda t: (t["page"], t["bbox"][1])
+    )  # sort by page and y-coordinate
+
     groups = []
     current_group = [sorted_tables[0]]
-    
+
     for i in range(1, len(sorted_tables)):
         current_table = sorted_tables[i]
-        prev_table = sorted_tables[i-1]
-        
+        prev_table = sorted_tables[i - 1]
+
         if _should_group_with_previous(current_table, prev_table):
             current_group.append(current_table)
         else:
             # Kết thúc group hiện tại và bắt đầu group mới
             groups.append(current_group)
             current_group = [current_table]
-    
+
     # Thêm group cuối cùng
     groups.append(current_group)
-    
+
     return groups
+
 
 def _should_group_with_previous(current_table: Table, prev_table: Table) -> bool:
     """
     Quyết định liệu current_table có nên được nhóm với prev_table hay không.
-    
+
     Logic dựa trên flowchart đã phân tích:
     1. Kiểm tra trang kế tiếp
-    2. Kiểm tra context tiêu đề mới  
+    2. Kiểm tra context tiêu đề mới
     3. Kiểm tra header riêng
     4. Phân biệt dựa trên context_before
     """
-    
+
     # Điều kiện tiên quyết: phải là trang kế tiếp
-    if current_table['page'] != prev_table['page'] + 1:
+    if current_table["page"] != prev_table["page"] + 1:
         return False
-    
+
     # Nếu context trước current_table là tiêu đề cho bảng/phần mới -> không group
-    if current_table['is_new_section_context']:
+    if current_table["is_new_section_context"]:
         return False
-    
+
     # Nếu current_table có header riêng -> không group (thường là bảng mới)
-    if current_table['is_has_header']:
+    if current_table["is_has_header"]:
         return False
-    
+
     # Nếu current_table không có header riêng -> có khả năng cao là span
-    if not current_table['is_has_header']:
+    if not current_table["is_has_header"]:
         # Trường hợp 1: Span rõ ràng (context_before rỗng)
-        if not current_table['context_before'].strip():
+        if not current_table["context_before"].strip():
             return True
-        
-        # Trường hợp 2: Span với context "nhiễu" 
+
+        # Trường hợp 2: Span với context "nhiễu"
         # (context_before không rỗng nhưng không phải tiêu đề mới)
         # Thêm kiểm tra tương thích cấu trúc cột để tăng độ tin cậy
         if _is_compatible_structure(current_table, prev_table):
             return True
-    
+
     # Các trường hợp khác: không group
     return False
+
 
 def _is_compatible_structure(current_table: Table, prev_table: Table) -> bool:
     """
     Kiểm tra tính tương thích về cấu trúc giữa hai bảng.
     Cho phép sai lệch 1-2 cột do lỗi extract tool.
     """
-    
+
     # Cho phép sai lệch tối đa 2 cột
-    col_diff = abs(current_table['n_columns'] - prev_table['n_columns'])
-    
+    col_diff = abs(current_table["n_columns"] - prev_table["n_columns"])
+
     # Nếu số cột giống nhau hoặc chênh lệch không quá 2 cột
     if col_diff <= 2:
         return True
-    
+
     # Thêm các kiểm tra khác nếu cần:
     # - Kiểm tra độ rộng bảng (bbox width)
-    current_width = current_table['bbox'][2] - current_table['bbox'][0]
-    prev_width = prev_table['bbox'][2] - prev_table['bbox'][0]
+    current_width = current_table["bbox"][2] - current_table["bbox"][0]
+    prev_width = prev_table["bbox"][2] - prev_table["bbox"][0]
     width_ratio = min(current_width, prev_width) / max(current_width, prev_width)
-    
+
     # Nếu độ rộng tương tự (>= 80% overlap) thì vẫn có thể group
     if width_ratio >= 0.8:
         return True
-    
+
     return False
 
-def print_groups_summary(groups: List[List[Table]]) -> None:
+
+def print_groups_summary(groups: List[List[Table]], debug: bool = False) -> None:
     """In tóm tắt các nhóm bảng để debug"""
-    logger.info(f"Tìm thấy {len(groups)} nhóm bảng:")
-    
-    for i, group in enumerate(groups, 1):
-        if len(group) == 1:
-            table = group[0]
-            logger.info(f"  Nhóm {i}: Bảng đơn (Trang {table['page']}, {table['n_columns']} cột)")
-        else:
-            pages = [t['page'] for t in group]
-            cols = [t['n_columns'] for t in group]
-            logger.info(f"  Nhóm {i}: Span {len(group)} bảng (Trang {min(pages)}-{max(pages)}, Cột: {cols})")
+    if debug:
+        logger.info(f"Tìm thấy {len(groups)} nhóm bảng:")
+
+        for i, group in enumerate(groups, 1):
+            if len(group) == 1:
+                table = group[0]
+                logger.info(
+                    f"  Nhóm {i}: Bảng đơn (Trang {table['page']}, {table['n_columns']} cột)"
+                )
+            else:
+                pages = [t["page"] for t in group]
+                cols = [t["n_columns"] for t in group]
+                logger.info(
+                    f"  Nhóm {i}: Span {len(group)} bảng (Trang {min(pages)}-{max(pages)}, Cột: {cols})"
+                )
 
 
-def merge_tables(tables: List[Table], handle_merge_cell: bool = False) -> MergedTable:
+def merge_tables(tables: List[Table], handle_merge_cell: bool = False, debug: bool = False) -> MergedTable:
     try:
         # Convert each table's markdown text to a DataFrame and fix merged rows
         if handle_merge_cell:
-            dfs = [fix_merged_row_df(convert_markdown_to_df(table["text"])) for table in tables]
+            dfs = [
+                fix_merged_row_df(convert_markdown_to_df(table["text"]))
+                for table in tables
+            ]
         else:
             dfs = [convert_markdown_to_df(table["text"]) for table in tables]
-        
+
         # Handle single-row tables that might have data as column names
         processed_dfs = []
         for i, df in enumerate(dfs):
@@ -857,83 +900,91 @@ def merge_tables(tables: List[Table], handle_merge_cell: bool = False) -> Merged
                 if len(df) == 1 and df.iloc[0].isna().all():
                     # Get column names (which might be the actual data)
                     col_names = list(df.columns)
-                    
+
                     # Convert column names back to a data row
                     data_row = pd.DataFrame([col_names])
                     # Give it generic column names
                     data_row.columns = [f"Col_{j}" for j in range(len(col_names))]
                     processed_dfs.append(data_row)
-                    logger.debug(f"Table {i}: Converted misinterpreted headers back to data row")
+                    if debug:
+                        logger.debug(
+                            f"Table {i}: Converted misinterpreted headers back to data row"
+                        )
                 else:
                     processed_dfs.append(df)
             else:
                 processed_dfs.append(df)
-        
+
         # Update dfs to use processed versions
         dfs = processed_dfs
-        
+
         # Determine the maximum number of columns across all DataFrames
         max_cols = max(df.shape[1] for df in dfs)
-        
+
         # Get headers from the first table to establish consistent column structure
         target_headers = get_headers_from_markdown(tables[0]["text"])
-        
+
         # If target_headers length doesn't match max_cols, create a consistent column structure
         if len(target_headers) < max_cols:
-            target_headers.extend([f"Col_{i}" for i in range(len(target_headers), max_cols)])
+            target_headers.extend(
+                [f"Col_{i}" for i in range(len(target_headers), max_cols)]
+            )
         elif len(target_headers) > max_cols:
             target_headers = target_headers[:max_cols]
-        
+
         # Process DataFrames using the safer approach
         normalized_dfs = []
-        
+
         # First DataFrame: keep as is (this is our standard with proper headers)
         first_df = dfs[0].copy()
-        
+
         # Ensure first DataFrame has the right number of columns
         if first_df.shape[1] < max_cols:
             for j in range(first_df.shape[1], max_cols):
                 first_df[f"temp_col_{j}"] = ""
         elif first_df.shape[1] > max_cols:
             first_df = first_df.iloc[:, :max_cols]
-        
+
         # Set proper column names for first DataFrame
-        first_df.columns = target_headers[:first_df.shape[1]]
+        first_df.columns = target_headers[: first_df.shape[1]]
         normalized_dfs.append(first_df)
-        
+
         # Process remaining DataFrames: set numeric column names to avoid header confusion
         for i in range(1, len(dfs)):
             df_copy = dfs[i].copy()
-            
+
             # Ensure it has the right number of columns first
             if df_copy.shape[1] < max_cols:
                 for j in range(df_copy.shape[1], max_cols):
                     df_copy[j] = ""  # Use numeric column names
             elif df_copy.shape[1] > max_cols:
                 df_copy = df_copy.iloc[:, :max_cols]
-            
+
             # Set NUMERIC column names (0, 1, 2, 3...) to avoid header confusion
             df_copy.columns = list(range(df_copy.shape[1]))
-            
+
             # Now safely rename to target headers
-            df_copy.columns = target_headers[:df_copy.shape[1]]
-            
+            df_copy.columns = target_headers[: df_copy.shape[1]]
+
             normalized_dfs.append(df_copy)
-        
+
         # Now concatenate the normalized DataFrames
         merged_df = pd.concat(normalized_dfs, ignore_index=True)
-        
+
         # Post-process: Remove any duplicate header rows (but be more careful)
         # Only remove header rows if we have enough data rows
         if len(merged_df) > 2:  # Only try to remove headers if we have more than 2 rows
             # Check if any row has the same values as the target headers
             header_mask = merged_df.apply(
-                lambda row: all(str(row.iloc[i]).strip().lower() == str(target_headers[i]).strip().lower() 
-                               for i in range(min(len(row), len(target_headers))) 
-                               if target_headers[i].strip()), 
-                axis=1
+                lambda row: all(
+                    str(row.iloc[i]).strip().lower()
+                    == str(target_headers[i]).strip().lower()
+                    for i in range(min(len(row), len(target_headers)))
+                    if target_headers[i].strip()
+                ),
+                axis=1,
             )
-            
+
             # Remove header duplicate rows (but keep at least one row)
             if header_mask.sum() > 0 and len(merged_df) > header_mask.sum():
                 # Keep only non-header rows
@@ -941,16 +992,16 @@ def merge_tables(tables: List[Table], handle_merge_cell: bool = False) -> Merged
                 # If we accidentally removed all rows, keep the original
                 if len(merged_df) == 0:
                     merged_df = pd.concat(normalized_dfs, ignore_index=True)
-        
+
         # Post-process the merged DataFrame
         # Convert all columns to string type before filling NaN
         merged_df = merged_df.astype(str)
         # Fill NaN values with empty strings
-        merged_df = merged_df.replace('nan', '')
+        merged_df = merged_df.replace("nan", "")
         # Remove columns with names starting with 'Col' and replace their values with empty strings
         merged_df.columns = [re.sub(r"^Col\d+", "", col) for col in merged_df.columns]
         merged_df = merged_df.replace(r"^Col\d+", "", regex=True)
-        
+
         # Create a MergedTable with the combined data
         merged_table = MergedTable(
             text=merged_df.to_markdown(index=False),
@@ -962,11 +1013,12 @@ def merge_tables(tables: List[Table], handle_merge_cell: bool = False) -> Merged
             n_columns=merged_df.shape[1],
             context_before=tables[0]["context_before"],
         )
-        
+
         return merged_table
-        
+
     except Exception as e:
-        logger.error(f"Error merging tables: {str(e)}")
+        if debug:
+            logger.error(f"Error merging tables: {str(e)}")
         # Return a fallback merged table with just the first table
         first_table = tables[0]
         return MergedTable(
@@ -981,58 +1033,77 @@ def merge_tables(tables: List[Table], handle_merge_cell: bool = False) -> Merged
         )
 
 
-def full_pipeline(doc: Union[List[str], List[pymupdf.Document]], pages: List[int] = None, handle_merge_cell: bool = False, debug: bool = False, debug_level: int = 1) -> List[MergedTable]:
+def full_pipeline(
+    doc: Union[List[str], List[pymupdf.Document]],
+    pages: List[int] = None,
+    handle_merge_cell: bool = False,
+    debug: bool = False,
+    debug_level: int = 1,
+    return_full_tables: bool = False,
+) -> Union[List[MergedTable], Tuple[List[Table], List[MergedTable]]]:
     merged_tables = []
-    
+
     # Convert single string to list if needed
     if isinstance(doc, str):
         doc = [doc]
-    
+
     for d in doc:
         try:
             if isinstance(d, str):
                 # Validate file path
                 if not os.path.exists(d):
-                    logger.error(f"File not found: {d}")
+                    if debug:
+                        logger.error(f"File not found: {d}")
                     continue
-                logger.info(f"Processing document: {get_pdf_name(d)}")
+                if debug:
+                    logger.info(f"Processing document: {get_pdf_name(d)}")
             else:
-                logger.info(f"Processing document: {d.name}")
-            
-            logger.info("   Extracting tables...")
+                if debug:
+                    logger.info(f"Processing document: {d.name}")
+
+            if debug:
+                logger.info("   Extracting tables...")
             tables = get_tables_from_pdf_2(d, pages, debug, debug_level)
-            logger.info("   Finding spanned table groups...")
+            if debug:
+                logger.info("   Finding spanned table groups...")
             table_groups = find_spanned_table_groups(tables)
-            print_groups_summary(table_groups)
-            logger.info("   Merging tables...")
+            print_groups_summary(table_groups, debug)
+            if debug:
+                logger.info("   Merging tables...")
             for group in table_groups:
-                merged_table = merge_tables(group, handle_merge_cell)
+                merged_table = merge_tables(group, handle_merge_cell, debug)
                 merged_tables.append(merged_table)
-            logger.info("   Done!")
+            if debug:
+                logger.info("   Done!")
         except Exception as e:
-            logger.error(f"Error processing document: {str(e)}")
+            if debug:
+                logger.error(f"Error processing document: {str(e)}")
             continue
-            
+
+    if return_full_tables:
+        return tables, merged_tables
     return merged_tables
 
 
 if __name__ == "__main__":
     # Example usage with proper file path
     # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/table_filter/input_pdfs/ccc3348504535e22aa44231e57052869.pdf"
-    source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/b014b8ca3c8ee543b655c29747cc6090.pdf"
+    # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/b014b8ca3c8ee543b655c29747cc6090.pdf"
     # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/b4c55e2918d743c7755992b0803d2dbe.pdf"
     # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/c935e2902adf7040a6ffe0db0f7c11e6.pdf"
     # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/notebooks/cross_page_tables/CA Warn Report.pdf"
-    # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/notebooks/cross_page_tables/national-capitals.pdf"
-    
+    source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/notebooks/cross_page_tables/national-capitals.pdf"
+
     # Validate file exists before processing
     if not os.path.exists(source_path):
-        logger.error(f"File not found: {source_path}")
+        print(f"File not found: {source_path}")
     else:
-        merged_tables = full_pipeline(source_path, debug=True, handle_merge_cell=False, debug_level=2)
+        merged_tables = full_pipeline(
+            source_path, debug=True, handle_merge_cell=False, debug_level=2
+        )
         with open("test_output.md", "w", encoding="utf-8") as f:
             for table in merged_tables:
                 f.write(f"## Tables: {table['context_before']}\n\n")
                 f.write(f"**Page:** {table['page']}\n\n")
                 f.write(f"{table['text']}\n")
-                f.write("\n" + "="*100 + "\n\n")
+                f.write("\n" + "=" * 100 + "\n\n")
