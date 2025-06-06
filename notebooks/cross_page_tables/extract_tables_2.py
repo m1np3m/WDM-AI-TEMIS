@@ -1021,6 +1021,9 @@ if __name__ == "__main__":
     # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/table_filter/input_pdfs/ccc3348504535e22aa44231e57052869.pdf"
     source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/b014b8ca3c8ee543b655c29747cc6090.pdf"
     # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/b4c55e2918d743c7755992b0803d2dbe.pdf"
+    # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/c935e2902adf7040a6ffe0db0f7c11e6.pdf"
+    # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/notebooks/cross_page_tables/CA Warn Report.pdf"
+    # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/notebooks/cross_page_tables/national-capitals.pdf"
     
     # Validate file exists before processing
     if not os.path.exists(source_path):

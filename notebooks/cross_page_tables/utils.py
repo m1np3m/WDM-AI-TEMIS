@@ -138,7 +138,7 @@ def get_is_new_section_context(contexts: List[str], return_prompt: bool = False)
 
     contexts_text = "\n\n".join(formatted_contexts)
 
-    input_text = f"### List of Contexts Before Tables:\n\n{contexts_text}\n\n### Total number of contexts: {len(contexts)}"
+    input_text = f"\n\n### List of Contexts Before Tables:\n\n{contexts_text}\n\n### Total number of contexts: {len(contexts)}"
 
     contents = [
         types.Content(
