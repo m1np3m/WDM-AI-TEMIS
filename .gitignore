@@ -4,6 +4,8 @@ __pycache__/
 *$py.class
 test*.*
 
+*.csv
+
 # Environments
 .env
 .venv
@@ -35,3 +37,4 @@ gdsc2025-74596a254ab4.json
 
 # secret key
 key_*.*
+qdrant_client_memory/
