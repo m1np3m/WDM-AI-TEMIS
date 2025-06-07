@@ -189,7 +189,6 @@ class Enrich_Openrouter:
 
                 try:
                     extract_table_markdown = markdown_map.get(filename)
-                    print(f"Extracted markdown for {filename}: {extract_table_markdown}")
 
                     if not extract_table_markdown or extract_table_markdown == "No suitable table found meeting threshold":
                         continue
@@ -273,16 +272,11 @@ class Enrich_VertexAI:
     def table_markdown_context(self, base64_image, markdown_content, summary_content):
         context_prompt = f"""
         You are given three sources of information related to a single table:
-
         1. **Raw Extracted Markdown Table**:
         {markdown_content}
-
         2. **Table Summary**:
         {summary_content}
-
-        3. **Table Image**:
-        (see below)
-
+        3. **Table Image**: (see below)
         ### Your task:
         Based on these three inputs, reconstruct a **well-formatted Markdown table** with accurate column headers, rows, alignment, and structure. Return only the fixed and properly structured Markdown table without spaces or line breaks.
         """
@@ -299,7 +293,7 @@ class Enrich_VertexAI:
 
     def enrich_image(self, base64_image, markdown_content):
         summary_content = self.prompt_for_summary(base64_image)
-        time.sleep(2)  # optional wait
+        time.sleep(2)  
         return self.table_markdown_context(base64_image, markdown_content, summary_content)
 
     def full_pipeline(self, source_path, markdown_map, result_path, verbose=1):
@@ -347,28 +341,44 @@ class Enrich_VertexAI:
 
 
 if __name__ == "__main__":
-    processor = Enrich_Openrouter()
-    source_path = "data/images"
-    markdown_map = {
-        "example_image.png": "| Header1 | Header2 |\n|---------|---------|\n| Data1   | Data2   |"
-    }
-    result_path = "data/results/vlm_enrich_results.json"
-    list_keys = ["your_api_key_1", "your_api_key_2"]
+    import json
+    from dotenv import load_dotenv, find_dotenv
+    load_dotenv(find_dotenv())
+    import os
+    source_path = "C:/Users/Admin/Data/WDM-AI-TEMIS/data/final_data/extracted_images"
+    with open(f"C:/Users/Admin/Data/WDM-AI-TEMIS/notebooks/VLM_parsing/pymupdf/pymupdf_json_2.json", "r", encoding="utf-8") as f:
+        extract_table_markdown = json.load(f)
+    
+    markdown_map = {item['image_path']: item['markdown_content'] for item in extract_table_markdown}
+    first_key, first_value = next(iter(markdown_map.items()))
 
-    results = processor.full_pipeline(source_path, markdown_map, result_path, list_keys)
+    test_markdown_map = {first_key: first_value}
+    print("Test markdown map:", test_markdown_map)
+    print("******************************")
+
+    processor = Enrich_Openrouter()
+
+    result_path = "./processed_results.json"
+    list_keys = [
+            os.getenv('API_OPENROUTE_locdinh'),
+            os.getenv('API_OPENROUTE_pjx'),
+            os.getenv('API_OPENROUTE_ueh'),
+            os.getenv('API_OPENROUTE_dynamic'),
+            os.getenv('API_OPENROUTE_innolab')
+        ]
+
+    results = processor.full_pipeline(source_path, test_markdown_map, result_path, list_keys)
     print("Pipeline completed. Results saved to:", result_path)
     print("Results:", results)
 
+    print("******************************")
     processor = Enrich_VertexAI(
         credentials_path="C:/Users/Admin/Data/multimodal-rag-baseline/gdsc2025-74596a254ab4.json"
     )
 
-    source_path = "data/images"
-    markdown_map = {
-        "table1.png": "| A | B |\n|---|---|\n| 1 | 2 |"
-    }
-    result_path = "data/results/vertex_chat_results.json"
 
-    results = processor.full_pipeline(source_path, markdown_map, result_path)
+    result_path = "./vertex_chat_results.json"
+
+    results = processor.full_pipeline(source_path, test_markdown_map, result_path)
     print("Pipeline completed. Results saved to:", result_path)
     print("Results:", results)
