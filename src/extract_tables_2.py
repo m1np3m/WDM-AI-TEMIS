@@ -10,8 +10,10 @@ import pymupdf  # PyMuPDF
 from loguru import logger
 from markdown import markdown
 from tqdm import tqdm
+from enrich import Enrich_VertexAI
+from utils import get_is_has_header, get_is_new_section_context
 
-from .utils import get_is_has_header, get_is_new_section_context
+IMAGE_OUTPUT_DIR = "C:/Users/PC/CODE/WDM-AI-TEMIS/test_images"
 
 
 class Table(TypedDict):
@@ -24,6 +26,7 @@ class Table(TypedDict):
     context_before: str
     is_new_section_context: bool
     is_has_header: bool
+    image_path: str
 
 
 class MergedTable(TypedDict):
@@ -35,6 +38,7 @@ class MergedTable(TypedDict):
     n_rows: int  # Sum of n_rows from original tables in the group
     n_columns: int  # Max n_columns from original tables, text padded to this
     context_before: str
+    image_paths: List[str]
 
 
 def get_pdf_name(source: str) -> str:
@@ -62,7 +66,9 @@ def get_headers_from_markdown(markdown_text: str) -> List[str]:
     return headers
 
 
-def solve_non_header_table(df: pd.DataFrame, target_headers: List[str], log: bool = False) -> pd.DataFrame:
+def solve_non_header_table(
+    df: pd.DataFrame, target_headers: List[str], log: bool = False
+) -> pd.DataFrame:
     if not isinstance(target_headers, list):
         if log:
             logger.warning(
@@ -505,7 +511,9 @@ def fix_merged_row_df(df: pd.DataFrame) -> pd.DataFrame:
     return test_df
 
 
-def process_single_page(page_info: Tuple[int, str, str], log: bool = False) -> List[Dict]:
+def process_single_page(
+    page_info: Tuple[int, str, str], log: bool = False
+) -> List[Dict]:
     """
     Process a single page of the PDF document to extract tables.
 
@@ -525,8 +533,15 @@ def process_single_page(page_info: Tuple[int, str, str], log: bool = False) -> L
         page_tables = []
 
         if tables:
-            for table in tables:
+            for idx, table in enumerate(tables):
                 bbox = table.bbox
+                # lấy hình ảnh ra
+                pix = page.get_pixmap(clip=bbox, dpi=200)
+                # bắt đầu lưu hình ảnh
+                output_filename = (
+                    f"{IMAGE_OUTPUT_DIR}/{source}_{page_idx + 1}_table_{idx}.png"
+                )
+                pix.save(output_filename)
                 n_rows = table.row_count
                 n_columns = table.col_count
                 text = table.to_markdown()
@@ -540,6 +555,7 @@ def process_single_page(page_info: Tuple[int, str, str], log: bool = False) -> L
                     "bbox": bbox,
                     "context_before": "",  # Will be filled later
                     "is_new_section_context": False,
+                    "image_path": output_filename,
                 }
                 page_tables.append(table_obj)
 
@@ -879,7 +895,12 @@ def print_groups_summary(groups: List[List[Table]], debug: bool = False) -> None
                 )
 
 
-def merge_tables(tables: List[Table], handle_merge_cell: bool = False, debug: bool = False) -> MergedTable:
+def merge_tables(
+    tables: List[Table],
+    handle_merge_cell: bool = False,
+    debug: bool = False,
+    enrich: bool = False,
+) -> MergedTable:
     try:
         # Convert each table's markdown text to a DataFrame and fix merged rows
         if handle_merge_cell:
@@ -889,6 +910,13 @@ def merge_tables(tables: List[Table], handle_merge_cell: bool = False, debug: bo
             ]
         else:
             dfs = [convert_markdown_to_df(table["text"]) for table in tables]
+            
+        if enrich:
+            processor = Enrich_VertexAI(
+                credentials_path=os.getenv("CREDENTIALS_PATH")
+            )
+            result_path = "vertex_chat_results.json"
+            
 
         # Handle single-row tables that might have data as column names
         processed_dfs = []
@@ -1012,6 +1040,7 @@ def merge_tables(tables: List[Table], handle_merge_cell: bool = False, debug: bo
             n_rows=merged_df.shape[0],
             n_columns=merged_df.shape[1],
             context_before=tables[0]["context_before"],
+            image_paths=[table["image_path"] for table in tables],
         )
 
         return merged_table
@@ -1030,6 +1059,7 @@ def merge_tables(tables: List[Table], handle_merge_cell: bool = False, debug: bo
             n_rows=first_table["n_rows"],
             n_columns=first_table["n_columns"],
             context_before=first_table["context_before"],
+            image_paths=[first_table["image_path"]],
         )
 
 
@@ -1041,6 +1071,7 @@ def full_pipeline(
     debug_level: int = 1,
     return_full_tables: bool = False,
     evaluate: bool = False,
+    enrich: bool = False,
 ) -> Union[List[MergedTable], Tuple[List[Table], List[MergedTable]]]:
     merged_tables = []
 
@@ -1075,7 +1106,7 @@ def full_pipeline(
             if debug:
                 logger.info("   Merging tables...")
             for group in table_groups:
-                merged_table = merge_tables(group, handle_merge_cell, debug)
+                merged_table = merge_tables(group, handle_merge_cell, debug, enrich)
                 merged_tables.append(merged_table)
             if debug:
                 logger.info("   Done!")
@@ -1096,18 +1127,35 @@ if __name__ == "__main__":
     # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/b4c55e2918d743c7755992b0803d2dbe.pdf"
     # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/c935e2902adf7040a6ffe0db0f7c11e6.pdf"
     # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/notebooks/cross_page_tables/CA Warn Report.pdf"
-    source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/notebooks/cross_page_tables/national-capitals.pdf"
+    source_path = (
+        "C:/Users/PC/CODE/WDM-AI-TEMIS/data/experiment_data/national-capitals.pdf"
+    )
 
-    # Validate file exists before processing
-    if not os.path.exists(source_path):
-        print(f"File not found: {source_path}")
-    else:
-        merged_tables = full_pipeline(
-            source_path, debug=True, handle_merge_cell=False, debug_level=2
-        )
-        with open("test_output.md", "w", encoding="utf-8") as f:
-            for table in merged_tables:
-                f.write(f"## Tables: {table['context_before']}\n\n")
-                f.write(f"**Page:** {table['page']}\n\n")
-                f.write(f"{table['text']}\n")
-                f.write("\n" + "=" * 100 + "\n\n")
+    # # Validate file exists before processing
+    # if not os.path.exists(source_path):
+    #     print(f"File not found: {source_path}")
+    # else:
+    #     merged_tables = full_pipeline(
+    #         source_path, debug=True, handle_merge_cell=False, debug_level=2
+    #     )
+    #     with open("test_output.md", "w", encoding="utf-8") as f:
+    #         for table in merged_tables:
+    #             f.write(f"## Tables: {table['context_before']}\n\n")
+    #             f.write(f"**Page:** {table['page']}\n\n")
+    #             f.write(f"{table['text']}\n")
+    #             f.write("\n" + "=" * 100 + "\n\n")
+
+    tables = get_tables_from_pdf_2(source_path)
+    table = tables[0]
+    test_markdown_map = {table["image_path"]: table["text"]}
+
+    print(test_markdown_map)
+    processor = Enrich_VertexAI(
+        credentials_path="C:/Users/PC/CODE/WDM-AI-TEMIS/key_vertex.json"
+    )
+
+    result_path = "vertex_chat_results.json"
+
+    results = processor.full_pipeline(source_path, test_markdown_map, result_path)
+    # print("Pipeline completed. Results saved to:", result_path)
+    # print("Results:", results)
