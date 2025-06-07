@@ -1,6 +1,8 @@
+import json
 import os
 import re
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import StringIO
 from multiprocessing import Pool, cpu_count
@@ -9,13 +11,20 @@ from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union
 import numpy as np
 import pandas as pd
 import pymupdf  # PyMuPDF
+from dotenv import load_dotenv
+from google import genai
+from google.genai import types
+from google.oauth2 import service_account
 from loguru import logger
 from markdown import markdown
 from tqdm import tqdm
 
+load_dotenv()
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils import Enrich_VertexAI, get_is_has_header, get_is_new_section_context
+from utils import Enrich_VertexAI
+from credential_helper import validate_credentials_path, print_credentials_help, setup_default_credentials
 
 IMAGE_OUTPUT_DIR = "C:/Users/PC/CODE/WDM-AI-TEMIS/test_images"
 
@@ -43,6 +52,262 @@ class WDMMergedTable(TypedDict):
     n_columns: int  # Max n_columns from original tables, text padded to this
     context_before: str
     image_paths: List[str]
+
+
+
+# Global variables - will be initialized when needed
+_credentials = None
+_project_id = None
+
+
+def _get_credentials():
+    """Lazy load credentials when needed."""
+    global _credentials, _project_id
+    
+    if _credentials is None:
+        credentials_path = os.getenv("CREDENTIALS_PATH")
+        _project_id = os.getenv("VERTEXAI_PROJECT_ID")
+        
+        if not credentials_path:
+            raise ValueError(
+                "CREDENTIALS_PATH environment variable is not set. "
+                "Please set it to the path of your Google Cloud service account JSON key file."
+            )
+        
+        if not os.path.exists(credentials_path):
+            raise FileNotFoundError(
+                f"Credentials file not found at: {credentials_path}. "
+                "Please ensure the path is correct and the file exists."
+            )
+        
+        # Set up credentials with proper scopes for Vertex AI
+        scopes = [
+            "https://www.googleapis.com/auth/cloud-platform",
+            "https://www.googleapis.com/auth/generative-language",
+        ]
+        
+        _credentials = service_account.Credentials.from_service_account_file(
+            credentials_path, scopes=scopes
+        )
+    
+    return _credentials, _project_id
+
+
+def get_is_new_section_context(contexts: List[str], return_prompt: bool = False):
+    credentials, project_id = _get_credentials()
+    
+    client = genai.Client(
+        vertexai=True,
+        project=project_id,
+        location="us-central1",  # Changed from "global" to a specific region
+        credentials=credentials,
+    )
+
+    si_text1 = (
+        "You are an expert in document structure analysis. Your task is to examine text segments that appear "
+        "immediately before tables or sections, and determine if they clearly indicate the start of a new section, "
+        "item, or table.\n\n"
+        "You will be provided with a numbered list of contexts (Context 1, Context 2, etc.). Each context is the text "
+        "that appears immediately before a table in a document. You need to return a list of boolean values (True or "
+        "False) of the same length, where each boolean corresponds to your decision for the context at the respective "
+        "position (Context 1 → first boolean, Context 2 → second boolean, etc.).\n\n"
+        "Criteria for deciding True (Indicates new section/table):\n"
+        "- Clear title or heading\n"
+        '- Structured heading (e.g., "Chapter 1", "Section A", "Table 1: ...")\n'
+        "- Introductory context that clearly introduces a new topic/section\n\n"
+        "Criteria for deciding False (Does NOT indicate new section/table):\n"
+        "- Empty context (marked as [EMPTY])\n"
+        "- Seamless content continuation from previous text\n"
+        "- No structured heading or title\n"
+        "- Just data or supplementary description\n"
+        "- Fragment of previous content\n\n"
+        "Requirements:\n"
+        "- Analyze each numbered context individually\n"
+        "- Apply the above criteria to decide True or False for each context\n"
+        "- Always return False for [EMPTY] contexts\n"
+        "- Return the result as a list of boolean values in the same order as the input contexts\n"
+        "- The output list must have exactly the same length as the input list"
+    )
+
+    model = "gemini-2.0-flash-001"
+
+    # Format contexts with clear indexing
+    formatted_contexts = [
+        f"Context {i}:\n{context.strip() if context.strip() else '[EMPTY]'}"
+        for i, context in enumerate(contexts, 1)
+    ]
+
+    contexts_text = "\n\n".join(formatted_contexts)
+
+    input_text = f"\n\n### List of Contexts Before Tables:\n\n{contexts_text}\n\n### Total number of contexts: {len(contexts)}"
+
+    contents = [
+        types.Content(
+            role="user",
+            parts=[types.Part.from_text(text=input_text)],
+        ),
+    ]
+
+    generate_content_config = types.GenerateContentConfig(
+        temperature=0,
+        top_p=1,
+        max_output_tokens=8192,
+        safety_settings=[
+            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="OFF"),
+            types.SafetySetting(
+                category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="OFF"
+            ),
+            types.SafetySetting(
+                category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="OFF"
+            ),
+            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="OFF"),
+        ],
+        response_mime_type="application/json",
+        response_schema={
+            "type": "OBJECT",
+            "required": ["is_new_section_context"],
+            "properties": {
+                "is_new_section_context": {
+                    "type": "ARRAY",
+                    "items": {"type": "BOOLEAN"},
+                }
+            },
+        },
+        system_instruction=[types.Part.from_text(text=si_text1)],
+    )
+
+    res = client.models.generate_content(
+        model=model,
+        contents=contents,
+        config=generate_content_config,
+    )
+    if return_prompt:
+        return json.loads(res.text), si_text1 + input_text
+    return json.loads(res.text)
+
+
+def get_is_has_header(
+    rows: List[List[str]], first_3_rows: List[str], return_prompt: bool = False
+):
+    credentials, project_id = _get_credentials()
+    
+    client = genai.Client(
+        vertexai=True,
+        project=project_id,
+        location="us-central1",  # Changed from "global" to a specific region
+        credentials=credentials,
+        #
+    )
+
+    model = "gemini-2.0-flash"
+
+    # Format table information with both headers and context
+    formatted_tables = []
+    for i, (header_row, table_context) in enumerate(zip(rows, first_3_rows), 1):
+        # Format header row
+        if header_row:
+            formatted_cells = []
+            for cell in header_row:
+                cell_content = str(cell).strip() if cell else ""
+                formatted_cells.append(cell_content if cell_content else "[EMPTY_CELL]")
+            header_text = " | ".join(formatted_cells)
+        else:
+            header_text = "[NO_HEADER_EXTRACTED]"
+
+        # Format table context (first 3 rows in markdown)
+        table_preview = table_context.strip() if table_context else "[EMPTY_TABLE]"
+
+        formatted_table = f"""\nTable {i}:
+Header Row: {header_text}
+Table Preview (First 3 rows):
+{table_preview}"""
+
+        formatted_tables.append(formatted_table)
+
+    tables_text = "\n\n" + "=" * 50 + "\n\n".join(formatted_tables)
+
+    input_text = f"\n\n### Tables Analysis:\n{tables_text}\n\n### Total number of tables: {len(rows)}"
+    contents = [
+        types.Content(
+            role="user",
+            parts=[types.Part.from_text(text=input_text)],
+        ),
+    ]
+
+    si_text = """You are an expert in analyzing table data structures. Your task is to examine tables and determine if their first row contains meaningful column headers.
+
+You will receive information about multiple tables. For each table, you'll see:
+1. "Header Row": The extracted first row that might be headers
+2. "Table Preview": A markdown preview of the first 3 rows to provide context
+
+You need to return a list of boolean values (True or False) of the same length, where each boolean corresponds to your analysis of whether the table at the respective position has a meaningful header row (Table 1 → first boolean, Table 2 → second boolean, etc.).
+
+A meaningful header row contains column names that describe the type of data that will appear in those columns in subsequent rows, rather than specific data values.
+
+**Criteria for determining a header row as meaningful (True):**
+- Contains descriptive column names (e.g., "Name", "Date", "Amount", "Description", "Status")
+- Uses generic categorical terms rather than specific data values
+- Typically concise and descriptive labels
+- Does not contain specific identifiers, dates, numbers, or actual data values
+- May contain formatting indicators like "Title", "Category", "Type", etc.
+- Headers are consistent with the data pattern shown in the table preview
+
+**Criteria for determining a header row is NOT meaningful (False):**
+- Contains specific data values instead of column names (e.g., "John Smith", "2023-01-01", "1000", specific IDs)
+- Starts with ordinal numbers, dates, or specific identifiers
+- Contains complete sentences or long descriptive paragraphs
+- Contains actual data that should be in body rows
+- [EMPTY_CELL] for most or all cells
+- [NO_HEADER_EXTRACTED] indicates no header was found
+- The header row looks like data when compared to subsequent rows in the preview
+
+**Important Analysis Guidelines:**
+- Compare the "Header Row" with the actual data shown in "Table Preview"
+- If the header row contains the same type of content as subsequent rows, it's likely data, not headers
+- Use the table preview to understand the data pattern and validate if the header makes sense
+- Headers should be descriptive labels, not data entries
+- Consider the overall structure and consistency of the table
+
+**Output Requirements:**
+- Analyze each table individually using both the header row and table preview
+- Return exactly one boolean per table in the same order as input
+- The output list must have exactly the same length as the input list
+- Be conservative: when in doubt, prefer False unless clearly header-like content"""
+
+    generate_content_config = types.GenerateContentConfig(
+        temperature=0,
+        top_p=1,
+        max_output_tokens=8192,
+        safety_settings=[
+            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="OFF"),
+            types.SafetySetting(
+                category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="OFF"
+            ),
+            types.SafetySetting(
+                category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="OFF"
+            ),
+            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="OFF"),
+        ],
+        response_mime_type="application/json",
+        response_schema={
+            "type": "OBJECT",
+            "required": ["is_has_header"],
+            "properties": {
+                "is_has_header": {"type": "ARRAY", "items": {"type": "BOOLEAN"}}
+            },
+        },
+        system_instruction=[types.Part.from_text(text=si_text)],
+    )
+
+    res = client.models.generate_content(
+        model=model,
+        contents=contents,
+        config=generate_content_config,
+    )
+    if return_prompt:
+        return json.loads(res.text), si_text + input_text
+    return json.loads(res.text)
+
 
 
 def get_pdf_name(source: str) -> str:
@@ -560,7 +825,6 @@ def get_tables_from_pdf(
     # AI-powered analysis (requires credentials)
     if use_ai_analysis:
         try:
-            from .credential_helper import validate_credentials_path
             validate_credentials_path()
             
             contexts = [
@@ -650,93 +914,85 @@ def get_tables_from_pdf(
         if debug:
             logger.info(f"Starting enrichment of {len(total_tables)} tables...")
 
-        from .credential_helper import validate_credentials_path
-        
         try:
             credentials_path = validate_credentials_path()
-        except (ValueError, FileNotFoundError) as e:
+            
+            start_time = time.time()
             if debug:
-                logger.error(f"Credentials error: {e}")
-            raise
-            try:
-                import time
+                logger.info(
+                    f"Processing {len(total_tables)} table(s) for enrichment with parallel processing (max 10 concurrent)"
+                )
 
-                start_time = time.time()
-                if debug:
-                    logger.info(
-                        f"Processing {len(total_tables)} table(s) for enrichment with parallel processing (max 10 concurrent)"
-                    )
+            processor = Enrich_VertexAI(credentials_path=credentials_path)
+            result_path = "vertex_chat_results.json"
 
-                processor = Enrich_VertexAI(credentials_path=credentials_path)
-                result_path = "vertex_chat_results.json"
+            # Initialize enriched_markdowns list with None values to maintain order
+            enriched_markdowns = [None] * len(total_tables)
 
-                # Initialize enriched_markdowns list with None values to maintain order
-                enriched_markdowns = [None] * len(total_tables)
+            # Use ThreadPoolExecutor for parallel processing with max 10 workers
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                # Submit all tasks
+                future_to_index = {
+                    executor.submit(
+                        enrich_single_table_markdown,
+                        processor,
+                        table,
+                        result_path,
+                        i,
+                        debug,
+                    ): i
+                    for i, table in enumerate(total_tables)
+                }
 
-                # Use ThreadPoolExecutor for parallel processing with max 10 workers
-                with ThreadPoolExecutor(max_workers=10) as executor:
-                    # Submit all tasks
-                    future_to_index = {
-                        executor.submit(
-                            enrich_single_table_markdown,
-                            processor,
-                            table,
-                            result_path,
-                            i,
-                            debug,
-                        ): i
-                        for i, table in enumerate(total_tables)
-                    }
-
-                    # Process completed tasks with progress tracking
-                    completed_count = 0
-                    for future in as_completed(future_to_index):
-                        try:
-                            table_index, enriched_markdown = future.result()
-                            enriched_markdowns[table_index] = enriched_markdown
-                            completed_count += 1
-                            if debug:
-                                logger.info(
-                                    f"Completed {completed_count}/{len(total_tables)} table enrichments"
-                                )
-                        except Exception as exc:
-                            table_index = future_to_index[future]
-                            if debug:
-                                logger.error(
-                                    f"Table {table_index + 1} generated an exception: {exc}"
-                                )
-                            # Use original markdown as fallback
-                            enriched_markdowns[table_index] = total_tables[table_index][
-                                "text"
-                            ]
-
-                if debug:
-                    elapsed_time = time.time() - start_time
-                    logger.info(
-                        f"All table enrichments completed in {elapsed_time:.2f}s (avg: {elapsed_time / len(total_tables):.2f}s per table)"
-                    )
-
-                # Ensure no None values in enriched_markdowns (fallback for any failed enrichments)
-                for i, enriched_markdown in enumerate(enriched_markdowns):
-                    if enriched_markdown is None:
+                # Process completed tasks with progress tracking
+                completed_count = 0
+                for future in as_completed(future_to_index):
+                    try:
+                        table_index, enriched_markdown = future.result()
+                        enriched_markdowns[table_index] = enriched_markdown
+                        completed_count += 1
                         if debug:
-                            logger.warning(
-                                f"Table {i + 1} enrichment was None, using original markdown"
+                            logger.info(
+                                f"Completed {completed_count}/{len(total_tables)} table enrichments"
                             )
-                        enriched_markdowns[i] = total_tables[i]["text"]
+                    except Exception as exc:
+                        table_index = future_to_index[future]
+                        if debug:
+                            logger.error(
+                                f"Table {table_index + 1} generated an exception: {exc}"
+                            )
+                        # Use original markdown as fallback
+                        enriched_markdowns[table_index] = total_tables[table_index][
+                            "text"
+                        ]
 
-                # Update tables with enriched markdown
-                for i, enriched_markdown in enumerate(enriched_markdowns):
-                    total_tables[i]["text"] = enriched_markdown
+            if debug:
+                elapsed_time = time.time() - start_time
+                logger.info(
+                    f"All table enrichments completed in {elapsed_time:.2f}s (avg: {elapsed_time / len(total_tables):.2f}s per table)"
+                )
 
-                if debug:
-                    logger.info("All tables updated with enriched content")
+            # Ensure no None values in enriched_markdowns (fallback for any failed enrichments)
+            for i, enriched_markdown in enumerate(enriched_markdowns):
+                if enriched_markdown is None:
+                    if debug:
+                        logger.warning(
+                            f"Table {i + 1} enrichment was None, using original markdown"
+                        )
+                    enriched_markdowns[i] = total_tables[i]["text"]
 
-            except Exception as e:
-                if debug:
-                    logger.error(
-                        f"Error during enrichment: {e}, keeping original markdown"
-                    )
+            # Update tables with enriched markdown
+            for i, enriched_markdown in enumerate(enriched_markdowns):
+                total_tables[i]["text"] = enriched_markdown
+
+            if debug:
+                logger.info("All tables updated with enriched content")
+
+        except Exception as e:
+            if debug:
+                logger.error(
+                    f"Error during enrichment: {e}, keeping original markdown"
+                )
 
     return total_tables
 
@@ -780,7 +1036,6 @@ def enrich_single_table(
     Returns:
         Tuple of (table_index, enriched_dataframe)
     """
-    import time
 
     start_time = time.time()
     try:
@@ -836,7 +1091,6 @@ def enrich_single_table_markdown(
     Returns:
         Tuple of (table_index, enriched_markdown)
     """
-    import time
 
     start_time = time.time()
     try:
@@ -1225,8 +1479,6 @@ def full_pipeline(
 
 
 if __name__ == "__main__":
-    from credential_helper import setup_default_credentials, print_credentials_help
-    
     # Try to setup credentials automatically
     if not setup_default_credentials():
         print("WARNING: No Google Cloud credentials found.")

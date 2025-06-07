@@ -263,34 +263,34 @@ A meaningful header row contains column names that describe the type of data tha
     return json.loads(res.text)
 
 
-if __name__ == "__main__":
-    ### TESTING CASES
+# if __name__ == "__main__":
+#     ### TESTING CASES
 
-    print("TEST CONTEXT BEFORE TABLE")
+#     print("TEST CONTEXT BEFORE TABLE")
 
-    contexts = [
-        "Table 2: Population by continent (2023 estimate)",
-        "Bảng 3: Danh sách các trường đại học hàng đầu thế giới",
-        "The quick brown fox jumps over the lazy dog.",
-        "Yesterday, it rained heavily in the city center.",
-    ]
+#     contexts = [
+#         "Table 2: Population by continent (2023 estimate)",
+#         "Bảng 3: Danh sách các trường đại học hàng đầu thế giới",
+#         "The quick brown fox jumps over the lazy dog.",
+#         "Yesterday, it rained heavily in the city center.",
+#     ]
 
-    rows1 = [
-        ["Year", "Population", "Continent"],
-        ["2023", "7.9 billion", "Asia"],
-    ]
+#     rows1 = [
+#         ["Year", "Population", "Continent"],
+#         ["2023", "7.9 billion", "Asia"],
+#     ]
 
-    first_3_rows1 = [
-        "| Year | Population | Continent |\n| 2023 | 7.9 billion | Asia |\n| 2022 | 7.8 billion | Africa |",
-        "|2023 | 7.9 billion | Asia |\n|2022 | 7.8 billion | Africa |",
-    ]
+#     first_3_rows1 = [
+#         "| Year | Population | Continent |\n| 2023 | 7.9 billion | Asia |\n| 2022 | 7.8 billion | Africa |",
+#         "|2023 | 7.9 billion | Asia |\n|2022 | 7.8 billion | Africa |",
+#     ]
 
-    res, prompt = get_is_new_section_context(contexts, return_prompt=True)
-    print("=====\tPrompt====\n", prompt)
-    print("=====\tResult====\n", res)
+#     res, prompt = get_is_new_section_context(contexts, return_prompt=True)
+#     print("=====\tPrompt====\n", prompt)
+#     print("=====\tResult====\n", res)
 
-    res, prompt = get_is_has_header(rows1, first_3_rows1, return_prompt=True)
-    print("=====\tPrompt====\n", prompt)
-    print("=====\tResult====\n", res)
+#     res, prompt = get_is_has_header(rows1, first_3_rows1, return_prompt=True)
+#     print("=====\tPrompt====\n", prompt)
+#     print("=====\tResult====\n", res)
 
-    print("=====\tTESTING CASES END====\n")
+#     print("=====\tTESTING CASES END====\n")

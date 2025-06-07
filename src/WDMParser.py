@@ -4,7 +4,7 @@ from typing import List, Tuple, TypedDict
 
 import pymupdf
 
-from .extract_tables import WDMMergedTable, WDMTable, full_pipeline, get_tables_from_pdf
+from extract_tables import WDMMergedTable, WDMTable, full_pipeline, get_tables_from_pdf
 
 
 class WDMText(TypedDict):
@@ -45,7 +45,7 @@ class WDMPDFParser:
         # Check credentials if advanced features are requested
         if merge_span_tables or enrich:
             try:
-                from .credential_helper import validate_credentials_path
+                from credential_helper import validate_credentials_path
 
                 validate_credentials_path()
                 if self.debug:
@@ -137,24 +137,30 @@ class WDMPDFParser:
 
 
 if __name__ == "__main__":
-    # When running as script, need to handle imports differently
-    import os
-    import sys
-
-    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
     parser = WDMPDFParser(
         file_path="C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/b014b8ca3c8ee543b655c29747cc6090.pdf",
         debug=True,
         debug_level=1,
     )
+    print("Extracting images...")
     images = parser.extract_images(pages=[1])
     print(images)
 
     # Extract text
+    print("Extracting text...")
     texts = parser.extract_text()
     print(f"Extracted text from {len(texts)} pages")
 
     # Extract tables
+    print("Extracting tables ... (without merging)")
     tables = parser.extract_tables()
+    print(f"Found {len(tables)} tables")
+
+    print("Extracting tables ... (with merging)")
+    tables = parser.extract_tables(merge_span_tables=True)
+    print(f"Found {len(tables)} tables")
+
+    print("Extracting tables ... (with merging and enriching)")
+    tables = parser.extract_tables(merge_span_tables=True, enrich=True)
     print(f"Found {len(tables)} tables")
