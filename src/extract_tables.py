@@ -1,8 +1,9 @@
 import os
 import re
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import StringIO
 from multiprocessing import Pool, cpu_count
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union
 
 import numpy as np
@@ -11,13 +12,15 @@ import pymupdf  # PyMuPDF
 from loguru import logger
 from markdown import markdown
 from tqdm import tqdm
-from enrich import Enrich_VertexAI
-from utils import get_is_has_header, get_is_new_section_context
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from utils import Enrich_VertexAI, get_is_has_header, get_is_new_section_context
 
 IMAGE_OUTPUT_DIR = "C:/Users/PC/CODE/WDM-AI-TEMIS/test_images"
 
 
-class Table(TypedDict):
+class WDMTable(TypedDict):
     text: str
     page: int
     source: str
@@ -30,7 +33,7 @@ class Table(TypedDict):
     image_path: str
 
 
-class MergedTable(TypedDict):
+class WDMMergedTable(TypedDict):
     text: str
     page: List[int]
     source: str
@@ -43,6 +46,15 @@ class MergedTable(TypedDict):
 
 
 def get_pdf_name(source: str) -> str:
+    """
+    Lấy tên của file pdf từ đường dẫn
+
+    Args:
+        source (str): Tên đường dẫn đến file pdf
+
+    Returns:
+        str: Tên của file pdf
+    """
     pdf_name = os.path.basename(source)
     file_name_part, file_extension_part = os.path.splitext(pdf_name)
     return file_name_part
@@ -113,10 +125,8 @@ def get_context_before_table(
     doc: pymupdf.Document,
     table_page_num_0_indexed: int,
     table_bbox: Tuple[float, float, float, float],
-    # Thông số cho việc tìm kiếm trên cùng trang
     max_vertical_gap_on_same_page: float = 50.0,
     search_upward_pixels_on_same_page: float = 300.0,
-    # Thông số cho việc tìm kiếm trên trang trước
     try_previous_page_if_no_context: bool = True,
     search_bottom_pixels_on_prev_page: float = 200.0,
     prev_page_all_table_bboxes: Optional[
@@ -151,36 +161,22 @@ def get_context_before_table(
             )
         return ""
 
-    tx0, ty0, tx1, _ = (
-        table_bbox  # ty1 là table_bbox[3] - không dùng trực tiếp trong định nghĩa vùng tìm kiếm phía trên
-    )
+    tx0, ty0, tx1, _ = table_bbox
 
-    # Danh sách để lưu trữ các phần văn bản ngữ cảnh (từ trang trước và trang hiện tại)
     final_context_parts: List[str] = []
 
-    # --- Phần 1: Tìm ngữ cảnh trên CÙNG TRANG với bảng ---
+    # Tìm ngữ cảnh trên cùng trang với bảng
     try:
         page = doc.load_page(table_page_num_0_indexed)
 
-        # Xác định vùng tìm kiếm trên cùng trang:
-        # Theo chiều dọc: từ một khoảng phía trên bảng (`search_upward_pixels_on_same_page`)
-        #                đến ngay sát phía trên đỉnh của bảng (`ty0`).
-        # Theo chiều ngang: **nghiêm ngặt trong giới hạn chiều rộng của bảng (tx0, tx1).**
         search_y_start_same_page = max(0.0, ty0 - search_upward_pixels_on_same_page)
-        search_y_end_same_page = (
-            ty0 - 1e-4
-        )  # Một epsilon nhỏ để đảm bảo nằm hoàn toàn phía trên bảng
+        search_y_end_same_page = ty0 - 1e-4
 
         if search_y_end_same_page > search_y_start_same_page:
-            # Vùng clip cho PyMuPDF sẽ sử dụng trực tiếp tx0, tx1 của bảng cho giới hạn ngang.
             clip_rect_same_page = pymupdf.Rect(
                 tx0, search_y_start_same_page, tx1, search_y_end_same_page
             )
 
-            # page.get_text("blocks", clip=...) trả về các block có phần giao với clip_rect.
-            # Quan trọng: nội dung `btext_clipped` đã được PyMuPDF cắt theo chiều ngang của `clip_rect_same_page`.
-            # Tọa độ (bx0_orig,...) là của block gốc chưa bị cắt.
-            # `sort=True` sắp xếp các block theo thứ tự đọc (y0, rồi x0).
             blocks_on_same_page = page.get_text(
                 "blocks", clip=clip_rect_same_page, sort=True
             )
@@ -196,28 +192,23 @@ def get_context_before_table(
                 btype,
             ) in blocks_on_same_page:
                 if btype != 0:
-                    continue  # Chỉ xử lý text blocks
+                    continue
                 btext_cleaned = btext_clipped.strip()
                 if not btext_cleaned:
                     continue
 
-                # Lọc dựa trên khoảng cách dọc từ đáy block gốc (by1_orig) đến đỉnh bảng (ty0).
-                # Block phải kết thúc trong vùng tìm kiếm đã clip (by1_orig <= search_y_end_same_page).
-                # Và khoảng cách đến đỉnh bảng không quá lớn.
                 if (
                     by1_orig <= search_y_end_same_page
                     and (ty0 - by1_orig) <= max_vertical_gap_on_same_page
                 ):
                     candidate_blocks_info_same_page.append(
                         {
-                            "y0_orig": by0_orig,  # Dùng y0_orig để sắp xếp theo thứ tự đọc
+                            "y0_orig": by0_orig,
                             "x0_orig": bx0_orig,
                             "text": btext_cleaned,
                         }
                     )
 
-            # Sắp xếp lại các block ứng viên theo thứ tự đọc (từ trên xuống, trái sang phải)
-            # Mặc dù `sort=True` đã sắp xếp, việc sắp xếp lại sau khi lọc đảm bảo thứ tự cho tập con.
             candidate_blocks_info_same_page.sort(
                 key=lambda b: (b["y0_orig"], b["x0_orig"])
             )
@@ -244,8 +235,7 @@ def get_context_before_table(
                 f"Lỗi khi xử lý cùng trang {table_page_num_0_indexed + 1} để tìm ngữ cảnh: {e_same_page}"
             )
 
-    # --- Phần 2: Tìm ngữ cảnh ở cuối TRANG TRƯỚC ---
-    # Thực hiện nếu không có ngữ cảnh trên trang hiện tại, được phép thử, và không phải trang đầu tiên.
+    # Tìm ngữ cảnh ở cuối trang trước
     if (
         try_previous_page_if_no_context
         and not final_context_parts
@@ -260,23 +250,18 @@ def get_context_before_table(
                     f"Đang thử tìm ở cuối trang trước (P{prev_page_num + 1})."
                 )
 
-            # Xác định vùng tìm kiếm Y trên trang trước:
-            # Mặc định là một vùng ở cuối trang.
             search_y_start_prev_page = (
                 prev_page.rect.height - search_bottom_pixels_on_prev_page
             )
 
-            # Nếu biết bbox của các bảng trên trang trước, tìm văn bản *sau* bảng cuối cùng.
             if prev_page_all_table_bboxes:
                 bottom_of_last_table_on_prev = 0.0
                 for prev_table_bbox_on_this_prev_page in prev_page_all_table_bboxes:
-                    # Giả định rằng prev_page_all_table_bboxes chỉ chứa các bảng thuộc prev_page_num
                     bottom_of_last_table_on_prev = max(
                         bottom_of_last_table_on_prev,
                         prev_table_bbox_on_this_prev_page[3],
-                    )  # y1
+                    )
 
-                # Bắt đầu tìm kiếm sau bảng cuối cùng đó, nhưng không cao hơn vùng cuối trang đã xác định.
                 search_y_start_prev_page = max(
                     search_y_start_prev_page, bottom_of_last_table_on_prev + 1e-4
                 )
@@ -285,10 +270,9 @@ def get_context_before_table(
                         f"Trang trước: tìm kiếm văn bản sau y={search_y_start_prev_page:.2f} (sau bảng cuối cùng / vùng cuối trang)."
                     )
 
-            search_y_end_prev_page = prev_page.rect.height  # Tìm đến hết cuối trang
+            search_y_end_prev_page = prev_page.rect.height
 
             if search_y_end_prev_page > search_y_start_prev_page:
-                # Vùng tìm kiếm ngang trên trang trước cũng nên căn theo chiều rộng của bảng hiện tại.
                 clip_rect_prev_page = pymupdf.Rect(
                     tx0, search_y_start_prev_page, tx1, search_y_end_prev_page
                 )
@@ -313,8 +297,6 @@ def get_context_before_table(
                     if not btext_cleaned:
                         continue
 
-                    # Chỉ lấy các block bắt đầu (by0_orig) trong vùng tìm kiếm xác định ở cuối trang.
-                    # Điều này đảm bảo chúng ta lấy văn bản ở phần dưới cùng mong muốn.
                     if by0_orig >= search_y_start_prev_page:
                         candidate_blocks_info_prev_page.append(
                             {
@@ -324,7 +306,6 @@ def get_context_before_table(
                             }
                         )
 
-                # Sắp xếp theo thứ tự đọc (từ trên xuống, trái sang phải)
                 candidate_blocks_info_prev_page.sort(
                     key=lambda b: (b["y0_orig"], b["x0_orig"])
                 )
@@ -333,8 +314,6 @@ def get_context_before_table(
                     b["text"] for b in candidate_blocks_info_prev_page
                 ]
                 if prev_page_context_list:
-                    # Nối ngữ cảnh từ trang trước vào *trước* ngữ cảnh (nếu có) từ trang hiện tại.
-                    # Vì hiện tại final_context_parts đang rỗng, nên đây sẽ là ngữ cảnh duy nhất.
                     final_context_parts = prev_page_context_list
                     if log:
                         context_text = "\n".join(prev_page_context_list)
@@ -352,16 +331,9 @@ def get_context_before_table(
                     f"Lỗi khi xử lý trang trước {prev_page_num + 1} để tìm ngữ cảnh: {e_prev_page}"
                 )
 
-    # Kết hợp các phần ngữ cảnh (nếu có nhiều hơn một, ví dụ sau này có thể thêm ngữ cảnh từ nhiều nguồn)
-    # Hiện tại, final_context_parts sẽ chỉ có 0 hoặc 1 phần tử dạng list đã join.
-    # Nếu logic thay đổi để `final_context_parts` chứa nhiều chuỗi, `"\n\n".join` sẽ phù hợp.
-    # Với logic hiện tại, nếu `final_context_parts` có phần tử, đó là một chuỗi đã join.
-
     final_result_text = ""
     if final_context_parts:
-        final_result_text = final_context_parts[
-            0
-        ]  # Vì chúng ta chỉ điền một khối văn bản (từ cùng trang hoặc trang trước)
+        final_result_text = final_context_parts[0]
 
     if log and not final_result_text:
         logger.info(
@@ -387,45 +359,6 @@ def convert_markdown_to_df(markdown_text: str) -> pd.DataFrame:
     except Exception as e:
         # Return empty DataFrame if conversion fails
         return pd.DataFrame()
-
-
-def fix_merged_row(df_col1, df_col2) -> pd.Series:
-    def find_consecutive_true_indices(series):
-        consecutive_groups = []
-        current_streak = []
-
-        for i, value in enumerate(series):
-            if value:
-                current_streak.append(i)
-            elif len(current_streak) >= 2:
-                consecutive_groups.append(current_streak)
-                current_streak = []
-
-        if len(current_streak) >= 2:
-            consecutive_groups.append(current_streak)
-
-        return consecutive_groups
-
-    # Create a copy of df_col2 to avoid SettingWithCopyWarning
-    result = df_col2.copy()
-
-    for group in find_consecutive_true_indices(df_col1 == df_col2):
-        if group[0] > 0:
-            # Use loc instead of iloc for explicit indexing
-            result.loc[group] = result.iloc[group[0] - 1]
-    return result
-
-
-def fix_merged_row_df(df: pd.DataFrame) -> pd.DataFrame:
-    test_df = df.copy()
-    n_cols = test_df.shape[1]
-
-    for i in range(1, n_cols - 1):
-        test_df.iloc[:, i + 1] = fix_merged_row(
-            test_df.iloc[:, i], test_df.iloc[:, i + 1]
-        )
-
-    return test_df
 
 
 def process_single_page(
@@ -539,13 +472,13 @@ def get_n_rows_from_markdown(markdown_text: str, n_rows: int) -> str:
     return "\n".join(cleaned_lines)
 
 
-def get_tables_from_pdf_2(
+def get_tables_from_pdf(
     doc: Union[str, pymupdf.Document],
     pages: List[int] = None,
     debug: bool = False,
     debug_level: int = 1,
     enrich: bool = False,
-) -> List[Table]:
+) -> List[WDMTable]:
     # Convert Document object to file path if needed
     if isinstance(doc, pymupdf.Document):
         pdf_path = doc.name
@@ -692,7 +625,7 @@ def get_tables_from_pdf_2(
     if enrich and total_tables:
         if debug:
             logger.info(f"Starting enrichment of {len(total_tables)} tables...")
-        
+
         credentials_path = os.getenv("CREDENTIALS_PATH")
         if not credentials_path:
             if debug:
@@ -700,24 +633,34 @@ def get_tables_from_pdf_2(
         else:
             try:
                 import time
+
                 start_time = time.time()
                 if debug:
-                    logger.info(f"Processing {len(total_tables)} table(s) for enrichment with parallel processing (max 10 concurrent)")
-                
+                    logger.info(
+                        f"Processing {len(total_tables)} table(s) for enrichment with parallel processing (max 10 concurrent)"
+                    )
+
                 processor = Enrich_VertexAI(credentials_path=credentials_path)
                 result_path = "vertex_chat_results.json"
-                
+
                 # Initialize enriched_markdowns list with None values to maintain order
                 enriched_markdowns = [None] * len(total_tables)
-                
+
                 # Use ThreadPoolExecutor for parallel processing with max 10 workers
                 with ThreadPoolExecutor(max_workers=10) as executor:
                     # Submit all tasks
                     future_to_index = {
-                        executor.submit(enrich_single_table_markdown, processor, table, result_path, i, debug): i
+                        executor.submit(
+                            enrich_single_table_markdown,
+                            processor,
+                            table,
+                            result_path,
+                            i,
+                            debug,
+                        ): i
                         for i, table in enumerate(total_tables)
                     }
-                    
+
                     # Process completed tasks with progress tracking
                     completed_count = 0
                     for future in as_completed(future_to_index):
@@ -726,142 +669,181 @@ def get_tables_from_pdf_2(
                             enriched_markdowns[table_index] = enriched_markdown
                             completed_count += 1
                             if debug:
-                                logger.info(f"Completed {completed_count}/{len(total_tables)} table enrichments")
+                                logger.info(
+                                    f"Completed {completed_count}/{len(total_tables)} table enrichments"
+                                )
                         except Exception as exc:
                             table_index = future_to_index[future]
                             if debug:
-                                logger.error(f"Table {table_index + 1} generated an exception: {exc}")
+                                logger.error(
+                                    f"Table {table_index + 1} generated an exception: {exc}"
+                                )
                             # Use original markdown as fallback
-                            enriched_markdowns[table_index] = total_tables[table_index]["text"]
-                
+                            enriched_markdowns[table_index] = total_tables[table_index][
+                                "text"
+                            ]
+
                 if debug:
                     elapsed_time = time.time() - start_time
-                    logger.info(f"All table enrichments completed in {elapsed_time:.2f}s (avg: {elapsed_time/len(total_tables):.2f}s per table)")
-                
+                    logger.info(
+                        f"All table enrichments completed in {elapsed_time:.2f}s (avg: {elapsed_time / len(total_tables):.2f}s per table)"
+                    )
+
                 # Ensure no None values in enriched_markdowns (fallback for any failed enrichments)
                 for i, enriched_markdown in enumerate(enriched_markdowns):
                     if enriched_markdown is None:
                         if debug:
-                            logger.warning(f"Table {i+1} enrichment was None, using original markdown")
+                            logger.warning(
+                                f"Table {i + 1} enrichment was None, using original markdown"
+                            )
                         enriched_markdowns[i] = total_tables[i]["text"]
-                
+
                 # Update tables with enriched markdown
                 for i, enriched_markdown in enumerate(enriched_markdowns):
                     total_tables[i]["text"] = enriched_markdown
-                
+
                 if debug:
                     logger.info("All tables updated with enriched content")
-                    
+
             except Exception as e:
                 if debug:
-                    logger.error(f"Error during enrichment: {e}, keeping original markdown")
+                    logger.error(
+                        f"Error during enrichment: {e}, keeping original markdown"
+                    )
 
     return total_tables
+
 
 def clean_markdown_fences(markdown_content: str) -> str:
     """
     Remove markdown code fences (``` or ```md) from the content if present.
-    
+
     Args:
         markdown_content: The markdown table content that may contain code fences
-        
+
     Returns:
         The cleaned markdown content with code fences removed
     """
     # Remove ```md or ``` or ```markdown from start
-    markdown_content = re.sub(r'^```(?:md|markdown)?\n', '', markdown_content)
-    
+    markdown_content = re.sub(r"^```(?:md|markdown)?\n", "", markdown_content)
+
     # Remove ``` from end
-    markdown_content = re.sub(r'\n```$', '', markdown_content)
-    
+    markdown_content = re.sub(r"\n```$", "", markdown_content)
+
     return markdown_content
 
 
-def enrich_single_table(processor: Enrich_VertexAI, table: Table, result_path: str, table_index: int, debug: bool = False) -> Tuple[int, pd.DataFrame]:
+def enrich_single_table(
+    processor: Enrich_VertexAI,
+    table: WDMTable,
+    result_path: str,
+    table_index: int,
+    debug: bool = False,
+) -> Tuple[int, pd.DataFrame]:
     """
     Enrich a single table using VertexAI processor.
-    
+
     Args:
         processor: VertexAI processor instance
         table: Table object to enrich
         result_path: Path to save results
         table_index: Index of the table for logging
         debug: Enable debug logging
-        
+
     Returns:
         Tuple of (table_index, enriched_dataframe)
     """
     import time
+
     start_time = time.time()
     try:
         if debug:
-            logger.info(f"Processing table {table_index + 1} from image: {table['image_path']}")
-        
+            logger.info(
+                f"Processing table {table_index + 1} from image: {table['image_path']}"
+            )
+
         enriched_markdown = processor.full_pipeline(
             file_path=table["image_path"],
-            extract_table_markdown=table['text'],
+            extract_table_markdown=table["text"],
             result_path=result_path,
-            return_markdown=True
+            return_markdown=True,
         )
         cleaned_markdown = clean_markdown_fences(enriched_markdown)
         df = convert_markdown_to_df(cleaned_markdown)
-        
+
         if debug:
             elapsed = time.time() - start_time
-            logger.info(f"Table {table_index + 1} enriched successfully in {elapsed:.2f}s, shape: {df.shape}")
-        
+            logger.info(
+                f"Table {table_index + 1} enriched successfully in {elapsed:.2f}s, shape: {df.shape}"
+            )
+
         return table_index, df
     except Exception as e:
         if debug:
             elapsed = time.time() - start_time
-            logger.error(f"Error enriching table {table_index + 1} after {elapsed:.2f}s: {e}")
+            logger.error(
+                f"Error enriching table {table_index + 1} after {elapsed:.2f}s: {e}"
+            )
         # Return original markdown as fallback
         df = convert_markdown_to_df(table["text"])
         return table_index, df
 
 
-def enrich_single_table_markdown(processor: Enrich_VertexAI, table: Table, result_path: str, table_index: int, debug: bool = False) -> Tuple[int, str]:
+def enrich_single_table_markdown(
+    processor: Enrich_VertexAI,
+    table: WDMTable,
+    result_path: str,
+    table_index: int,
+    debug: bool = False,
+) -> Tuple[int, str]:
     """
     Enrich a single table using VertexAI processor and return enriched markdown.
-    
+
     Args:
         processor: VertexAI processor instance
         table: Table object to enrich
         result_path: Path to save results
         table_index: Index of the table for logging
         debug: Enable debug logging
-        
+
     Returns:
         Tuple of (table_index, enriched_markdown)
     """
     import time
+
     start_time = time.time()
     try:
         if debug:
-            logger.info(f"Enriching table {table_index + 1} from image: {table['image_path']}")
-        
+            logger.info(
+                f"Enriching table {table_index + 1} from image: {table['image_path']}"
+            )
+
         enriched_markdown = processor.full_pipeline(
             file_path=table["image_path"],
-            extract_table_markdown=table['text'],
+            extract_table_markdown=table["text"],
             result_path=result_path,
-            return_markdown=True
+            return_markdown=True,
         )
         cleaned_markdown = clean_markdown_fences(enriched_markdown)
-        
+
         if debug:
             elapsed = time.time() - start_time
-            logger.info(f"Table {table_index + 1} enriched successfully in {elapsed:.2f}s")
-        
+            logger.info(
+                f"Table {table_index + 1} enriched successfully in {elapsed:.2f}s"
+            )
+
         return table_index, cleaned_markdown
     except Exception as e:
         if debug:
             elapsed = time.time() - start_time
-            logger.error(f"Error enriching table {table_index + 1} after {elapsed:.2f}s: {e}")
+            logger.error(
+                f"Error enriching table {table_index + 1} after {elapsed:.2f}s: {e}"
+            )
         # Return original markdown as fallback
         return table_index, table["text"]
 
 
-def find_spanned_table_groups(tables: List[Table]) -> List[List[Table]]:
+def find_spanned_table_groups(tables: List[WDMTable]) -> List[List[WDMTable]]:
     """
     Tìm các nhóm bảng kéo dài qua nhiều trang (span multipage).
 
@@ -899,7 +881,7 @@ def find_spanned_table_groups(tables: List[Table]) -> List[List[Table]]:
     return groups
 
 
-def _should_group_with_previous(current_table: Table, prev_table: Table) -> bool:
+def _should_group_with_previous(current_table: WDMTable, prev_table: WDMTable) -> bool:
     """
     Quyết định liệu current_table có nên được nhóm với prev_table hay không.
 
@@ -938,7 +920,7 @@ def _should_group_with_previous(current_table: Table, prev_table: Table) -> bool
     return False
 
 
-def _is_compatible_structure(current_table: Table, prev_table: Table) -> bool:
+def _is_compatible_structure(current_table: WDMTable, prev_table: WDMTable) -> bool:
     """
     Kiểm tra tính tương thích về cấu trúc giữa hai bảng.
     Cho phép sai lệch 1-2 cột do lỗi extract tool.
@@ -964,7 +946,7 @@ def _is_compatible_structure(current_table: Table, prev_table: Table) -> bool:
     return False
 
 
-def print_groups_summary(groups: List[List[Table]], debug: bool = False) -> None:
+def print_groups_summary(groups: List[List[WDMTable]], debug: bool = False) -> None:
     """In tóm tắt các nhóm bảng để debug"""
     if debug:
         logger.info(f"Tìm thấy {len(groups)} nhóm bảng:")
@@ -984,9 +966,9 @@ def print_groups_summary(groups: List[List[Table]], debug: bool = False) -> None
 
 
 def merge_tables(
-    tables: List[Table],
+    tables: List[WDMTable],
     debug: bool = False,
-) -> MergedTable:
+) -> WDMMergedTable:
     try:
         # Convert each table's markdown text to a DataFrame
         # Tables are now pre-enriched if enrich was requested in get_tables_from_pdf_2
@@ -1022,13 +1004,13 @@ def merge_tables(
 
         # Filter out empty DataFrames
         non_empty_dfs = [df for df in dfs if not df.empty and df.shape[1] > 0]
-        
+
         if not non_empty_dfs:
             # If all DataFrames are empty, return a fallback merged table
             if debug:
                 logger.warning("All DataFrames are empty, returning fallback table")
             first_table = tables[0]
-            return MergedTable(
+            return WDMMergedTable(
                 text=first_table["text"],
                 page=[first_table["page"]],
                 source=first_table["source"],
@@ -1126,7 +1108,7 @@ def merge_tables(
         merged_df = merged_df.replace(r"^Col\d+", "", regex=True)
 
         # Create a MergedTable with the combined data
-        merged_table = MergedTable(
+        merged_table = WDMMergedTable(
             text=merged_df.to_markdown(index=False),
             page=[table["page"] for table in tables],
             source=tables[0]["source"],
@@ -1145,7 +1127,7 @@ def merge_tables(
             logger.error(f"Error merging tables: {str(e)}")
         # Return a fallback merged table with just the first table
         first_table = tables[0]
-        return MergedTable(
+        return WDMMergedTable(
             text=first_table["text"],
             page=[first_table["page"]],
             source=first_table["source"],
@@ -1166,7 +1148,7 @@ def full_pipeline(
     return_full_tables: bool = False,
     evaluate: bool = False,
     enrich: bool = False,
-) -> Union[List[MergedTable], Tuple[List[Table], List[MergedTable]]]:
+) -> Union[List[WDMMergedTable], Tuple[List[WDMTable], List[WDMMergedTable]]]:
     merged_tables = []
 
     # Convert single string to list if needed
@@ -1189,7 +1171,7 @@ def full_pipeline(
 
             if debug:
                 logger.info("   Extracting tables...")
-            tables = get_tables_from_pdf_2(d, pages, debug, debug_level, enrich)
+            tables = get_tables_from_pdf(d, pages, debug, debug_level, enrich)
             if evaluate:
                 # bỏ đi table cuối cùng
                 tables = tables[:-1]
@@ -1218,10 +1200,12 @@ if __name__ == "__main__":
     # Set up environment variables
     if not os.getenv("CREDENTIALS_PATH"):
         os.environ["CREDENTIALS_PATH"] = "C:/Users/PC/CODE/WDM-AI-TEMIS/key_vertex.json"
-    
+
     # Example usage with proper file path
     # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/table_filter/input_pdfs/ccc3348504535e22aa44231e57052869.pdf"
-    source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/b014b8ca3c8ee543b655c29747cc6090.pdf"
+    source_path = (
+        "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/b014b8ca3c8ee543b655c29747cc6090.pdf"
+    )
     # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/b4c55e2918d743c7755992b0803d2dbe.pdf"
     # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/c935e2902adf7040a6ffe0db0f7c11e6.pdf"
     # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/notebooks/cross_page_tables/CA Warn Report.pdf"
@@ -1238,7 +1222,7 @@ if __name__ == "__main__":
             source_path, pages=[2, 3], debug=True, debug_level=1, enrich=False
         )
         for table in merged_tables:
-            print(table['text'])
+            print(table["text"])
             print("\n\n\n\n")
         # with open("test_output.md", "w", encoding="utf-8") as f:
         #     for table in merged_tables:
@@ -1246,7 +1230,7 @@ if __name__ == "__main__":
         #         f.write(f"**Page:** {table['page']}\n\n")
         #         f.write(f"{table['text']}\n")
         #         f.write("\n" + "=" * 100 + "\n\n")
-    
+
     print("ENRICHED")
     if not os.path.exists(source_path):
         print(f"File not found: {source_path}")
@@ -1255,37 +1239,40 @@ if __name__ == "__main__":
             source_path, pages=[2, 3], debug=True, debug_level=1, enrich=True
         )
         for table in merged_tables:
-            print(table['text'])
+            print(table["text"])
             print("\n\n\n\n")
-    
-    #### DEBUG INDIVIDUAL TABLES       
+
+    #### DEBUG INDIVIDUAL TABLES
     print("=" * 80)
     print("DEBUGGING INDIVIDUAL TABLES")
     print("=" * 80)
-    
+
     print("ORIGINAL TABLES:")
-    original_tables = get_tables_from_pdf_2(source_path, pages=[2], debug=False, enrich=False)
+    original_tables = get_tables_from_pdf(
+        source_path, pages=[2], debug=False, enrich=False
+    )
     for i, t in enumerate(original_tables):
-        print(f"--- Original Table {i+1} ---")
-        print(t['text'][:200] + "...")  # First 200 chars
+        print(f"--- Original Table {i + 1} ---")
+        print(t["text"][:200] + "...")  # First 200 chars
         print()
 
     print("ENRICHED TABLES:")
-    enriched_tables = get_tables_from_pdf_2(source_path, pages=[2], debug=False, enrich=True)
+    enriched_tables = get_tables_from_pdf(
+        source_path, pages=[2], debug=False, enrich=True
+    )
     for i, t in enumerate(enriched_tables):
-        print(f"--- Enriched Table {i+1} ---")
-        print(t['text'][:200] + "...")  # First 200 chars
+        print(f"--- Enriched Table {i + 1} ---")
+        print(t["text"][:200] + "...")  # First 200 chars
         print()
-    
+
     # Compare them
     print("COMPARISON:")
     for i in range(len(original_tables)):
-        original_text = original_tables[i]['text']
-        enriched_text = enriched_tables[i]['text']
+        original_text = original_tables[i]["text"]
+        enriched_text = enriched_tables[i]["text"]
         is_different = original_text != enriched_text
-        print(f"Table {i+1} - Different: {is_different}")
+        print(f"Table {i + 1} - Different: {is_different}")
         if is_different:
             print(f"  Original length: {len(original_text)}")
             print(f"  Enriched length: {len(enriched_text)}")
         print()
-    
