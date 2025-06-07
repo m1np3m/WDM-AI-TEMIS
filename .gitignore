@@ -12,7 +12,6 @@ test*.*
 env/
 venv/
 ENV/
-src/
 env.bak/
 venv.bak/
 img/
@@ -35,4 +34,7 @@ data/raw/
 data/processed/
 data/pdfs/
 gdsc2025-74596a254ab4.json
+
+# secret key
+key_*.*
 qdrant_client_memory/
