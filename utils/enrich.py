@@ -214,7 +214,7 @@ class Enrich_Openrouter:
 
 
 class Enrich_VertexAI:
-    def __init__(self, model_name="gemini-1.5-flash", credentials_path=None):
+    def __init__(self, model_name="gemini-2.0-flash-001", credentials_path=None):
         if credentials_path is None:
             raise ValueError("Bạn cần cung cấp đường dẫn tới credentials_path")
 
@@ -280,7 +280,7 @@ class Enrich_VertexAI:
         time.sleep(2)  
         return self.table_markdown_context(base64_image, markdown_content, summary_content)
 
-    def full_pipeline(self, file_path, extract_table_markdown, result_path, verbose=1):
+    def full_pipeline(self, file_path, extract_table_markdown, result_path, verbose=1, return_markdown=False):
         results = []
         filename = os.path.basename(file_path)
         if not file_path.lower().endswith(".png"):
@@ -292,6 +292,9 @@ class Enrich_VertexAI:
                 base64_image = base64.b64encode(img_file.read()).decode("utf-8")
 
             enriched_markdown = self.enrich_image(base64_image=base64_image, markdown_content=extract_table_markdown)
+
+            if return_markdown:
+                return enriched_markdown
 
             results.append({
                 "image_path": filename,
