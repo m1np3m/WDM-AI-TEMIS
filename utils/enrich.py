@@ -175,54 +175,38 @@ class Enrich_Openrouter:
         time.sleep(3)
         return final_markdown_response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
 
-    def full_pipeline(self, source_path, markdown_map, result_path, list_keys, verbose=1):
-        image_extensions = ('.png',)
+    def full_pipeline(self, file_path, extract_table_markdown, result_path, list_keys):
         results = []
+        filename = os.path.basename(file_path)
         request_counters = {key: 0 for key in list_keys}
+        api_key = self.get_valid_key(request_counters)
+        if not file_path.lower().endswith(".png"):
+            print("Không phải ảnh PNG")
+            return
 
-        for filename in os.listdir(source_path):
-            file_path = os.path.join(source_path, filename)
+        try:
+            with open(file_path, "rb") as img_file:
+                base64_image = base64.b64encode(img_file.read()).decode("utf-8")
 
-            if os.path.isfile(file_path) and filename.lower().endswith(image_extensions):
-                if verbose:
-                    print(f"Đang xử lý ảnh: {filename}")
+            enriched_markdown = self.enrich_image(api_key=api_key, base64_image=base64_image, markdown_content=extract_table_markdown)
+            request_counters[api_key] += 2
+            results.append({
+                "image_path": filename,
+                "markdown_content": enriched_markdown
+            })
 
-                try:
-                    extract_table_markdown = markdown_map.get(filename)
-
-                    if not extract_table_markdown or extract_table_markdown == "No suitable table found meeting threshold":
-                        continue
-
-                    api_key = self.get_valid_key(request_counters)
-
-                    with open(file_path, "rb") as img_file:
-                        base64_image = base64.b64encode(img_file.read()).decode("utf-8")
-
-                    enriched_markdown = self.enrich_image(
-                        api_key=api_key,
-                        base64_image=base64_image,
-                        markdown_content=extract_table_markdown
-                    )
-
-                    request_counters[api_key] += 2
-
-                    result_item = {
-                        "image_path": filename,
-                        "markdown_content": enriched_markdown,
-                    }
-                    results.append(result_item)
-
-                except Exception as e:
-                    print(f"Lỗi xảy ra với ảnh {filename}: {e}")
-                    print("Lưu tiến độ hiện tại vào file JSON...")
-                    with open(result_path, 'w', encoding='utf-8') as json_file:
-                        json.dump(results, json_file, indent=2, ensure_ascii=False)
-                    return []
+        except Exception as e:
+            print(f"Lỗi với ảnh {filename}: {e}")
+            print("Lưu tiến độ hiện tại...")
+            with open(result_path, 'w', encoding='utf-8') as json_file:
+                json.dump(results, json_file, indent=2, ensure_ascii=False)
+            return []
 
         with open(result_path, 'w', encoding='utf-8') as json_file:
             json.dump(results, json_file, indent=2, ensure_ascii=False)
 
         return results
+
 
 
 
@@ -296,42 +280,30 @@ class Enrich_VertexAI:
         time.sleep(2)  
         return self.table_markdown_context(base64_image, markdown_content, summary_content)
 
-    def full_pipeline(self, source_path, markdown_map, result_path, verbose=1):
-        image_extensions = ('.png',)
+    def full_pipeline(self, file_path, extract_table_markdown, result_path, verbose=1):
         results = []
+        filename = os.path.basename(file_path)
+        if not file_path.lower().endswith(".png"):
+            print("Không phải ảnh PNG")
+            return
 
-        for filename in os.listdir(source_path):
-            if not filename.lower().endswith(image_extensions):
-                continue
+        try:
+            with open(file_path, "rb") as img_file:
+                base64_image = base64.b64encode(img_file.read()).decode("utf-8")
 
-            file_path = os.path.join(source_path, filename)
-            if not os.path.isfile(file_path):
-                continue
+            enriched_markdown = self.enrich_image(base64_image=base64_image, markdown_content=extract_table_markdown)
 
-            if verbose:
-                print(f"Đang xử lý ảnh: {filename}")
+            results.append({
+                "image_path": filename,
+                "markdown_content": enriched_markdown
+            })
 
-            try:
-                extract_table_markdown = markdown_map.get(filename)
-                if not extract_table_markdown or extract_table_markdown == "No suitable table found meeting threshold":
-                    continue
-
-                with open(file_path, "rb") as img_file:
-                    base64_image = base64.b64encode(img_file.read()).decode("utf-8")
-
-                enriched_markdown = self.enrich_image(base64_image, extract_table_markdown)
-
-                results.append({
-                    "image_path": filename,
-                    "markdown_content": enriched_markdown
-                })
-
-            except Exception as e:
-                print(f"Lỗi với ảnh {filename}: {e}")
-                print("Lưu tiến độ hiện tại...")
-                with open(result_path, 'w', encoding='utf-8') as json_file:
-                    json.dump(results, json_file, indent=2, ensure_ascii=False)
-                return []
+        except Exception as e:
+            print(f"Lỗi với ảnh {filename}: {e}")
+            print("Lưu tiến độ hiện tại...")
+            with open(result_path, 'w', encoding='utf-8') as json_file:
+                json.dump(results, json_file, indent=2, ensure_ascii=False)
+            return []
 
         with open(result_path, 'w', encoding='utf-8') as json_file:
             json.dump(results, json_file, indent=2, ensure_ascii=False)
@@ -345,15 +317,10 @@ if __name__ == "__main__":
     from dotenv import load_dotenv, find_dotenv
     load_dotenv(find_dotenv())
     import os
-    source_path = "C:/Users/Admin/Data/WDM-AI-TEMIS/data/final_data/extracted_images"
-    with open(f"C:/Users/Admin/Data/WDM-AI-TEMIS/notebooks/VLM_parsing/pymupdf/pymupdf_json_2.json", "r", encoding="utf-8") as f:
-        extract_table_markdown = json.load(f)
-    
-    markdown_map = {item['image_path']: item['markdown_content'] for item in extract_table_markdown}
-    first_key, first_value = next(iter(markdown_map.items()))
 
-    test_markdown_map = {first_key: first_value}
-    print("Test markdown map:", test_markdown_map)
+    image_path = "C:/Users/Admin/Data/WDM-AI-TEMIS/data/data-finetune/final_data/extracted_images/aca6e4ba-2349-425b-ba92-9ed6e2747a3d.png"
+    markdown_content = "|March24,2010|☑Mexico|0–0|☑Iceland|InternationalFriendly|63,227|\n|--|--|--|--|--|--|\n|June 9,2011|☑Costa Rica|1–1|☑El Salvador|2011CONCACAFGold CupGroup A|46,012|\n|June 9,2011|☑Mexico|5–0|☑Cuba|2011CONCACAFGold CupGroup A|46,012|\n|August2, 2014|☑Liverpool|2–0|☑Milan|2014InternationalChampionsCup|69,364|\n|July 15,2015|☑Cuba|1–0|☑Guatemala|2015CONCACAFGold CupGroup C|55,823|\n|July 15,2015|☑Mexico|4–4|☑Trinidad and Tobago|2015CONCACAFGold CupGroup C|55,823|\n|July 25,2015|☑Chelsea|1–1(6–5 pen.)|☑Paris Saint-Germain|2015InternationalChampionsCup|61,224|\n|July 30,2016|☑BayernMunich|4–1|☑Inter Milan|2016InternationalChampionsCup|53,629|\n|July 22,2018|☑BorussiaDortmund|3–1|☑Liverpool|2018InternationalChampionsCup|55,447|\n|June23,2019|☑Canada|7–0|☑Cuba|2019CONCACAFGold CupGroup A|59,283|\n|June23,2019|☑Mexico|3–2|☑Martinique|2019CONCACAFGold CupGroup A|59,283|\n|July 20,2019|☑Arsenal|3–0|☑Fiorentina|2019InternationalChampionsCup|34,902|\n|October3, 2019|☑United Stateswomen|2–0|☑South Koreawomen|Women’sInternationalFriendly|30,071|\n"
+    
     print("******************************")
 
     processor = Enrich_Openrouter()
@@ -367,7 +334,7 @@ if __name__ == "__main__":
             os.getenv('API_OPENROUTE_innolab')
         ]
 
-    results = processor.full_pipeline(source_path, test_markdown_map, result_path, list_keys)
+    results = processor.full_pipeline(image_path, markdown_content, result_path, list_keys)
     print("Pipeline completed. Results saved to:", result_path)
     print("Results:", results)
 
@@ -379,6 +346,6 @@ if __name__ == "__main__":
 
     result_path = "./vertex_chat_results.json"
 
-    results = processor.full_pipeline(source_path, test_markdown_map, result_path)
+    results = processor.full_pipeline(image_path, markdown_content, result_path)
     print("Pipeline completed. Results saved to:", result_path)
     print("Results:", results)
