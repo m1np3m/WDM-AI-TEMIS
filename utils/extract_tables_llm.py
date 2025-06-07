@@ -9,22 +9,47 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# To use model
-credentials_path = os.getenv("CREDENTIALS_PATH")
-project_id = os.getenv("VERTEXAI_PROJECT_ID")
+# Global variables - will be initialized when needed
+_credentials = None
+_project_id = None
 
-# Set up credentials with proper scopes for Vertex AI
-scopes = [
-    "https://www.googleapis.com/auth/cloud-platform",
-    "https://www.googleapis.com/auth/generative-language",
-]
 
-credentials = service_account.Credentials.from_service_account_file(
-    credentials_path, scopes=scopes
-)
+def _get_credentials():
+    """Lazy load credentials when needed."""
+    global _credentials, _project_id
+    
+    if _credentials is None:
+        credentials_path = os.getenv("CREDENTIALS_PATH")
+        _project_id = os.getenv("VERTEXAI_PROJECT_ID")
+        
+        if not credentials_path:
+            raise ValueError(
+                "CREDENTIALS_PATH environment variable is not set. "
+                "Please set it to the path of your Google Cloud service account JSON key file."
+            )
+        
+        if not os.path.exists(credentials_path):
+            raise FileNotFoundError(
+                f"Credentials file not found at: {credentials_path}. "
+                "Please ensure the path is correct and the file exists."
+            )
+        
+        # Set up credentials with proper scopes for Vertex AI
+        scopes = [
+            "https://www.googleapis.com/auth/cloud-platform",
+            "https://www.googleapis.com/auth/generative-language",
+        ]
+        
+        _credentials = service_account.Credentials.from_service_account_file(
+            credentials_path, scopes=scopes
+        )
+    
+    return _credentials, _project_id
 
 
 def get_is_new_section_context(contexts: List[str], return_prompt: bool = False):
+    credentials, project_id = _get_credentials()
+    
     client = genai.Client(
         vertexai=True,
         project=project_id,
@@ -118,6 +143,8 @@ def get_is_new_section_context(contexts: List[str], return_prompt: bool = False)
 def get_is_has_header(
     rows: List[List[str]], first_3_rows: List[str], return_prompt: bool = False
 ):
+    credentials, project_id = _get_credentials()
+    
     client = genai.Client(
         vertexai=True,
         project=project_id,

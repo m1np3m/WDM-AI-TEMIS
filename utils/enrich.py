@@ -216,7 +216,17 @@ class Enrich_Openrouter:
 class Enrich_VertexAI:
     def __init__(self, model_name="gemini-2.0-flash-001", credentials_path=None):
         if credentials_path is None:
-            raise ValueError("Bạn cần cung cấp đường dẫn tới credentials_path")
+            raise ValueError(
+                "credentials_path is required. "
+                "Please provide the path to your Google Cloud service account JSON key file. "
+                "Example: Enrich_VertexAI(credentials_path='/path/to/your/service-account-key.json')"
+            )
+        
+        if not os.path.exists(credentials_path):
+            raise FileNotFoundError(
+                f"Credentials file not found at: {credentials_path}. "
+                "Please ensure the path is correct and the file exists."
+            )
 
         self.credentials = service_account.Credentials.from_service_account_file(credentials_path)
         self.llm = ChatVertexAI(

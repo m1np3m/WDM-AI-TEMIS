@@ -1,6 +1,5 @@
 import base64
 import os
-
 from typing import List, Tuple, TypedDict
 
 import pymupdf
@@ -10,6 +9,7 @@ from .extract_tables import WDMMergedTable, WDMTable, full_pipeline, get_tables_
 
 class WDMText(TypedDict):
     """Text extracted from a page of a PDF file"""
+
     text: str
     page: int
     source: str
@@ -17,6 +17,7 @@ class WDMText(TypedDict):
 
 class WDMImage(TypedDict):
     """Image extracted from a page of a PDF file"""
+
     base64_image: str
     page: int
     source: str
@@ -41,6 +42,25 @@ class WDMPDFParser:
         merge_span_tables: bool = False,
         enrich: bool = False,
     ) -> List[WDMTable | WDMMergedTable]:
+        # Check credentials if advanced features are requested
+        if merge_span_tables or enrich:
+            try:
+                from .credential_helper import validate_credentials_path
+
+                validate_credentials_path()
+                if self.debug:
+                    print("✅ Credentials validated successfully")
+            except (ValueError, FileNotFoundError) as e:
+                error_msg = (
+                    f"❌ Credentials required for advanced features (merge_span_tables={merge_span_tables}, enrich={enrich})\n"
+                    f"Error: {str(e)}\n\n"
+                    "💡 Quick fix options:\n"
+                    "1. Set environment variable: export CREDENTIALS_PATH='/path/to/your/key.json'\n"
+                    "2. Place your Google Cloud service account key file as 'key_vertex.json' in project root\n"
+                    "3. Run: python -c 'from src import print_credentials_help; print_credentials_help()' for detailed setup\n"
+                )
+                raise ValueError(error_msg) from e
+
         if merge_span_tables:
             return full_pipeline(
                 self.file_path,
@@ -50,21 +70,29 @@ class WDMPDFParser:
                 enrich=enrich,
             )
         else:
+            # Use AI analysis when credentials are available OR when it's explicitly requested
+            use_ai_analysis = merge_span_tables or enrich
             return get_tables_from_pdf(
                 self.file_path,
                 pages=pages,
                 debug=self.debug,
                 debug_level=self.debug_level,
                 enrich=enrich,
+                use_ai_analysis=use_ai_analysis,
             )
 
     def extract_text(self, pages: List[int] = None) -> str:
-        all_text = []
         doc = pymupdf.open(self.file_path)
+        if pages is None:
+            pages = range(1, len(doc) + 1)
+        all_text = []
+
         for page_number in pages:
             page = doc[page_number - 1]
             all_text.append(
-                WDMText(text=page.get_text(), page=page_number - 1, source=self.file_path)
+                WDMText(
+                    text=page.get_text(), page=page_number - 1, source=self.file_path
+                )
             )
         return all_text
 
@@ -77,7 +105,9 @@ class WDMPDFParser:
 
         images = []
         doc = pymupdf.open(self.file_path)
-        for page_index in pages or range(1, len(doc) + 1):
+        if pages is None:
+            pages = range(1, len(doc) + 1)
+        for page_index in pages:
             page = doc[page_index - 1]
             image_list = page.get_images(full=True)
             for img in image_list:
@@ -108,22 +138,23 @@ class WDMPDFParser:
 
 if __name__ == "__main__":
     # When running as script, need to handle imports differently
-    import sys
     import os
+    import sys
+
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    
+
     parser = WDMPDFParser(
         file_path="C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/b014b8ca3c8ee543b655c29747cc6090.pdf",
         debug=True,
         debug_level=1,
     )
-    # tables = parser.extract_tables(merge_span_tables=True)
-    # print(tables)
-
-    # texts = parser.extract_text(pages=[1])
-    # print(texts)
-
-    images = parser.extract_images(
-        pages=[1], stored_path="C:/Users/PC/CODE/WDM-AI-TEMIS/test_images"
-    )
+    images = parser.extract_images(pages=[1])
     print(images)
+
+    # Extract text
+    texts = parser.extract_text()
+    print(f"Extracted text from {len(texts)} pages")
+
+    # Extract tables
+    tables = parser.extract_tables()
+    print(f"Found {len(tables)} tables")

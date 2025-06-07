@@ -478,6 +478,7 @@ def get_tables_from_pdf(
     debug: bool = False,
     debug_level: int = 1,
     enrich: bool = False,
+    use_ai_analysis: bool = True,
 ) -> List[WDMTable]:
     # Convert Document object to file path if needed
     if isinstance(doc, pymupdf.Document):
@@ -547,60 +548,83 @@ def get_tables_from_pdf(
     doc.close()
 
     # Process contexts for new section detection
-    contexts = [
-        (i, table["context_before"])
-        for i, table in enumerate(total_tables)
-        if table["context_before"] != ""
-    ]
-
-    # Retry logic for get_is_new_section_context
-    max_retries = 5
-    for attempt in range(max_retries):
-        res, prompt_contexts = get_is_new_section_context(
-            [context for _, context in contexts], return_prompt=True
-        )
-        if len(res["is_new_section_context"]) == len(contexts):
-            break
-        if debug:
-            logger.warning(
-                f"Retry {attempt + 1}/{max_retries} for get_is_new_section_context due to length mismatch."
-            )
-    else:
-        if debug:
-            logger.error(
-                "Failed to get correct response length from get_is_new_section_context after retries."
-            )
-
-    for (i, _), is_new in zip(contexts, res["is_new_section_context"]):
-        total_tables[i]["is_new_section_context"] = is_new
-
-    # Process headers
+    # Process headers (needed for both AI and non-AI analysis)
     headers = [get_headers_from_markdown(table["text"]) for table in total_tables]
     # Post process: remove Col1, Col2, Col3, etc.
     headers = [[re.sub(r"^Col\d+", "", col) for col in header] for header in headers]
-    # Retry logic for get_is_has_header
+    
+    # Initialize debug variables
+    prompt_contexts = ""
+    prompt_headers = ""
+    
+    # AI-powered analysis (requires credentials)
+    if use_ai_analysis:
+        try:
+            from .credential_helper import validate_credentials_path
+            validate_credentials_path()
+            
+            contexts = [
+                (i, table["context_before"])
+                for i, table in enumerate(total_tables)
+                if table["context_before"] != ""
+            ]
 
-    first_3_rows = [
-        get_n_rows_from_markdown(table["text"], 3) for table in total_tables
-    ]
-    for attempt in range(max_retries):
-        res, prompt_headers = get_is_has_header(
-            headers, first_3_rows, return_prompt=True
-        )
-        if len(res["is_has_header"]) == len(headers):
-            break
-        if debug:
-            logger.warning(
-                f"Retry {attempt + 1}/{max_retries} for get_is_has_header due to length mismatch."
-            )
+            # Retry logic for get_is_new_section_context
+            max_retries = 5
+            for attempt in range(max_retries):
+                res, prompt_contexts = get_is_new_section_context(
+                    [context for _, context in contexts], return_prompt=True
+                )
+                if len(res["is_new_section_context"]) == len(contexts):
+                    break
+                if debug:
+                    logger.warning(
+                        f"Retry {attempt + 1}/{max_retries} for get_is_new_section_context due to length mismatch."
+                    )
+            else:
+                if debug:
+                    logger.error(
+                        "Failed to get correct response length from get_is_new_section_context after retries."
+                    )
+
+            for (i, _), is_new in zip(contexts, res["is_new_section_context"]):
+                total_tables[i]["is_new_section_context"] = is_new
+
+            # Retry logic for get_is_has_header
+            first_3_rows = [
+                get_n_rows_from_markdown(table["text"], 3) for table in total_tables
+            ]
+            for attempt in range(max_retries):
+                res, prompt_headers = get_is_has_header(
+                    headers, first_3_rows, return_prompt=True
+                )
+                if len(res["is_has_header"]) == len(headers):
+                    break
+                if debug:
+                    logger.warning(
+                        f"Retry {attempt + 1}/{max_retries} for get_is_has_header due to length mismatch."
+                    )
+            else:
+                if debug:
+                    logger.error(
+                        "Failed to get correct response length from get_is_has_header after retries."
+                    )
+
+            for table, is_has in zip(total_tables, res["is_has_header"]):
+                table["is_has_header"] = is_has
+                
+        except (ValueError, FileNotFoundError) as e:
+            if debug:
+                logger.warning(f"AI analysis disabled due to credentials issue: {e}")
+            # Set default values when AI analysis is not available
+            for table in total_tables:
+                table["is_new_section_context"] = False
+                table["is_has_header"] = False
     else:
-        if debug:
-            logger.error(
-                "Failed to get correct response length from get_is_has_header after retries."
-            )
-
-    for table, is_has in zip(total_tables, res["is_has_header"]):
-        table["is_has_header"] = is_has
+        # Set default values when AI analysis is disabled
+        for table in total_tables:
+            table["is_new_section_context"] = False
+            table["is_has_header"] = False
 
     if debug:
         for idx, table in enumerate(total_tables):
@@ -626,11 +650,14 @@ def get_tables_from_pdf(
         if debug:
             logger.info(f"Starting enrichment of {len(total_tables)} tables...")
 
-        credentials_path = os.getenv("CREDENTIALS_PATH")
-        if not credentials_path:
+        from .credential_helper import validate_credentials_path
+        
+        try:
+            credentials_path = validate_credentials_path()
+        except (ValueError, FileNotFoundError) as e:
             if debug:
-                logger.warning("CREDENTIALS_PATH not set, skipping enrichment")
-        else:
+                logger.error(f"Credentials error: {e}")
+            raise
             try:
                 import time
 
@@ -1171,7 +1198,8 @@ def full_pipeline(
 
             if debug:
                 logger.info("   Extracting tables...")
-            tables = get_tables_from_pdf(d, pages, debug, debug_level, enrich)
+            # For full_pipeline (merge_span_tables=True), always use AI analysis
+            tables = get_tables_from_pdf(d, pages, debug, debug_level, enrich, use_ai_analysis=True)
             if evaluate:
                 # bỏ đi table cuối cùng
                 tables = tables[:-1]
@@ -1197,9 +1225,15 @@ def full_pipeline(
 
 
 if __name__ == "__main__":
-    # Set up environment variables
-    if not os.getenv("CREDENTIALS_PATH"):
-        os.environ["CREDENTIALS_PATH"] = "C:/Users/PC/CODE/WDM-AI-TEMIS/key_vertex.json"
+    from credential_helper import setup_default_credentials, print_credentials_help
+    
+    # Try to setup credentials automatically
+    if not setup_default_credentials():
+        print("WARNING: No Google Cloud credentials found.")
+        print("If you plan to use enrichment features, please set up credentials.")
+        print("For now, running without enrichment...\n")
+        print("For setup instructions, run: python -c 'from src import print_credentials_help; print_credentials_help()'")
+        print()
 
     # Example usage with proper file path
     # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/table_filter/input_pdfs/ccc3348504535e22aa44231e57052869.pdf"
