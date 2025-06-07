@@ -2,6 +2,7 @@ import os
 import re
 from io import StringIO
 from multiprocessing import Pool, cpu_count
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union
 
 import numpy as np
@@ -106,94 +107,6 @@ def solve_non_header_table(
     df_copy.columns = target_headers
     result_df = pd.concat([new_first_row_df, df_copy], ignore_index=True)
     return result_df.reset_index(drop=True)
-
-
-def split_markdown_into_tables(markdown_text, log: bool = False):
-    """
-    Splits a single string containing multiple Markdown tables into a list of strings,
-    where each string represents a separate table. Tables are assumed to be
-    separated by two or more newline characters.
-
-    Args:
-        markdown_text (str): The input string potentially containing multiple
-                             Markdown tables.
-        log (bool): If True, enables detailed debug logging during the process.
-                      Defaults to False.
-
-    Returns:
-        list: A list of strings, where each string is a distinct Markdown table
-              found in the input. Returns an empty list if the input is empty,
-              contains only whitespace, or no valid table blocks are found.
-    """
-    # Initial check for empty or whitespace-only input.
-    if not markdown_text or not markdown_text.strip():
-        if log:
-            logger.debug(
-                "Input markdown_text is empty or consists only of whitespace. Returning an empty list."
-            )
-        return []
-
-    # Remove leading/trailing whitespace (including newlines) from the entire input text.
-    # This helps in correctly splitting and avoids empty entries at the list ends if the input
-    # has extraneous blank lines at the very beginning or end.
-    stripped_text = markdown_text.strip()
-
-    # If stripping results in an empty string (e.g., input was just "\n\n\n" or similar).
-    if not stripped_text:
-        if log:
-            logger.debug(
-                "Input markdown_text became empty after stripping. Returning an empty list."
-            )
-        return []
-
-    # Split the text into blocks using two or more newline characters as delimiters.
-    # This pattern is the primary mechanism for separating distinct Markdown tables.
-    potential_table_blocks = re.split(r"\n{2,}", stripped_text)
-
-    extracted_tables = []
-    if log:
-        logger.debug(
-            f"Split input into {len(potential_table_blocks)} potential block(s). Now validating each block..."
-        )
-
-    for i, block in enumerate(potential_table_blocks):
-        # Clean whitespace from each individual block before validation.
-        # This ensures that checks like startswith('|') are accurate even if a block has padding.
-        cleaned_block = block.strip()
-
-        # A valid Markdown table block, when separated this way, must not be empty
-        # and should start with the pipe character ('|').
-        if cleaned_block and cleaned_block.startswith("|"):
-            extracted_tables.append(cleaned_block)
-            if log:
-                # Provide a preview of the extracted table for debugging purposes.
-                # Replacing newlines with '↵' for a compact log preview.
-                preview = cleaned_block[:70].replace("\n", "↵")
-                if len(cleaned_block) > 70:
-                    preview += "..."
-                logger.debug(
-                    f"Block {i + 1}: Valid table extracted (length: {len(cleaned_block)} chars). Preview: '{preview}'"
-                )
-        elif cleaned_block and log:
-            # Log if a non-empty block was discarded because it didn't meet the table criteria.
-            preview = cleaned_block[:70].replace("\n", "↵")
-            if len(cleaned_block) > 70:
-                preview += "..."
-            logger.warning(
-                f"Block {i + 1}: Discarded (length: {len(cleaned_block)} chars) as it does not start with '|' "
-                f"after stripping. Preview: '{preview}'"
-            )
-        elif not cleaned_block and log:
-            # Log if a block (after stripping) was empty.
-            # This should be less common if `stripped_text` itself is not empty.
-            logger.debug(
-                f"Block {i + 1}: Discarded as it was empty after stripping individual block whitespace."
-            )
-
-    if log:
-        logger.info(f"Finished processing. Extracted {len(extracted_tables)} table(s).")
-
-    return extracted_tables
 
 
 def get_context_before_table(
@@ -463,13 +376,17 @@ def get_context_before_table(
 
 
 def convert_markdown_to_df(markdown_text: str) -> pd.DataFrame:
-    html_table = markdown(markdown_text, extensions=["markdown.extensions.tables"])
-    dfs = pd.read_html(StringIO(f"<table>{html_table}</table>"))
-    if dfs:
-        df = dfs[0]
-    else:
-        print("Không tìm thấy bảng nào.")
-    return df
+    try:
+        html_table = markdown(markdown_text, extensions=["markdown.extensions.tables"])
+        dfs = pd.read_html(StringIO(f"<table>{html_table}</table>"))
+        if dfs:
+            return dfs[0]
+        else:
+            # Return empty DataFrame if no tables found
+            return pd.DataFrame()
+    except Exception as e:
+        # Return empty DataFrame if conversion fails
+        return pd.DataFrame()
 
 
 def fix_merged_row(df_col1, df_col2) -> pd.Series:
@@ -627,6 +544,7 @@ def get_tables_from_pdf_2(
     pages: List[int] = None,
     debug: bool = False,
     debug_level: int = 1,
+    enrich: bool = False,
 ) -> List[Table]:
     # Convert Document object to file path if needed
     if isinstance(doc, pymupdf.Document):
@@ -770,7 +688,177 @@ def get_tables_from_pdf_2(
                 f"CONTEXTS PROMPT:\n{prompt_contexts}\n\nHEADERS PROMPT:\n{prompt_headers}"
             )
 
+    # Enrich tables if requested
+    if enrich and total_tables:
+        if debug:
+            logger.info(f"Starting enrichment of {len(total_tables)} tables...")
+        
+        credentials_path = os.getenv("CREDENTIALS_PATH")
+        if not credentials_path:
+            if debug:
+                logger.warning("CREDENTIALS_PATH not set, skipping enrichment")
+        else:
+            try:
+                import time
+                start_time = time.time()
+                if debug:
+                    logger.info(f"Processing {len(total_tables)} table(s) for enrichment with parallel processing (max 10 concurrent)")
+                
+                processor = Enrich_VertexAI(credentials_path=credentials_path)
+                result_path = "vertex_chat_results.json"
+                
+                # Initialize enriched_markdowns list with None values to maintain order
+                enriched_markdowns = [None] * len(total_tables)
+                
+                # Use ThreadPoolExecutor for parallel processing with max 10 workers
+                with ThreadPoolExecutor(max_workers=10) as executor:
+                    # Submit all tasks
+                    future_to_index = {
+                        executor.submit(enrich_single_table_markdown, processor, table, result_path, i, debug): i
+                        for i, table in enumerate(total_tables)
+                    }
+                    
+                    # Process completed tasks with progress tracking
+                    completed_count = 0
+                    for future in as_completed(future_to_index):
+                        try:
+                            table_index, enriched_markdown = future.result()
+                            enriched_markdowns[table_index] = enriched_markdown
+                            completed_count += 1
+                            if debug:
+                                logger.info(f"Completed {completed_count}/{len(total_tables)} table enrichments")
+                        except Exception as exc:
+                            table_index = future_to_index[future]
+                            if debug:
+                                logger.error(f"Table {table_index + 1} generated an exception: {exc}")
+                            # Use original markdown as fallback
+                            enriched_markdowns[table_index] = total_tables[table_index]["text"]
+                
+                if debug:
+                    elapsed_time = time.time() - start_time
+                    logger.info(f"All table enrichments completed in {elapsed_time:.2f}s (avg: {elapsed_time/len(total_tables):.2f}s per table)")
+                
+                # Ensure no None values in enriched_markdowns (fallback for any failed enrichments)
+                for i, enriched_markdown in enumerate(enriched_markdowns):
+                    if enriched_markdown is None:
+                        if debug:
+                            logger.warning(f"Table {i+1} enrichment was None, using original markdown")
+                        enriched_markdowns[i] = total_tables[i]["text"]
+                
+                # Update tables with enriched markdown
+                for i, enriched_markdown in enumerate(enriched_markdowns):
+                    total_tables[i]["text"] = enriched_markdown
+                
+                if debug:
+                    logger.info("All tables updated with enriched content")
+                    
+            except Exception as e:
+                if debug:
+                    logger.error(f"Error during enrichment: {e}, keeping original markdown")
+
     return total_tables
+
+def clean_markdown_fences(markdown_content: str) -> str:
+    """
+    Remove markdown code fences (``` or ```md) from the content if present.
+    
+    Args:
+        markdown_content: The markdown table content that may contain code fences
+        
+    Returns:
+        The cleaned markdown content with code fences removed
+    """
+    # Remove ```md or ``` or ```markdown from start
+    markdown_content = re.sub(r'^```(?:md|markdown)?\n', '', markdown_content)
+    
+    # Remove ``` from end
+    markdown_content = re.sub(r'\n```$', '', markdown_content)
+    
+    return markdown_content
+
+
+def enrich_single_table(processor: Enrich_VertexAI, table: Table, result_path: str, table_index: int, debug: bool = False) -> Tuple[int, pd.DataFrame]:
+    """
+    Enrich a single table using VertexAI processor.
+    
+    Args:
+        processor: VertexAI processor instance
+        table: Table object to enrich
+        result_path: Path to save results
+        table_index: Index of the table for logging
+        debug: Enable debug logging
+        
+    Returns:
+        Tuple of (table_index, enriched_dataframe)
+    """
+    import time
+    start_time = time.time()
+    try:
+        if debug:
+            logger.info(f"Processing table {table_index + 1} from image: {table['image_path']}")
+        
+        enriched_markdown = processor.full_pipeline(
+            file_path=table["image_path"],
+            extract_table_markdown=table['text'],
+            result_path=result_path,
+            return_markdown=True
+        )
+        cleaned_markdown = clean_markdown_fences(enriched_markdown)
+        df = convert_markdown_to_df(cleaned_markdown)
+        
+        if debug:
+            elapsed = time.time() - start_time
+            logger.info(f"Table {table_index + 1} enriched successfully in {elapsed:.2f}s, shape: {df.shape}")
+        
+        return table_index, df
+    except Exception as e:
+        if debug:
+            elapsed = time.time() - start_time
+            logger.error(f"Error enriching table {table_index + 1} after {elapsed:.2f}s: {e}")
+        # Return original markdown as fallback
+        df = convert_markdown_to_df(table["text"])
+        return table_index, df
+
+
+def enrich_single_table_markdown(processor: Enrich_VertexAI, table: Table, result_path: str, table_index: int, debug: bool = False) -> Tuple[int, str]:
+    """
+    Enrich a single table using VertexAI processor and return enriched markdown.
+    
+    Args:
+        processor: VertexAI processor instance
+        table: Table object to enrich
+        result_path: Path to save results
+        table_index: Index of the table for logging
+        debug: Enable debug logging
+        
+    Returns:
+        Tuple of (table_index, enriched_markdown)
+    """
+    import time
+    start_time = time.time()
+    try:
+        if debug:
+            logger.info(f"Enriching table {table_index + 1} from image: {table['image_path']}")
+        
+        enriched_markdown = processor.full_pipeline(
+            file_path=table["image_path"],
+            extract_table_markdown=table['text'],
+            result_path=result_path,
+            return_markdown=True
+        )
+        cleaned_markdown = clean_markdown_fences(enriched_markdown)
+        
+        if debug:
+            elapsed = time.time() - start_time
+            logger.info(f"Table {table_index + 1} enriched successfully in {elapsed:.2f}s")
+        
+        return table_index, cleaned_markdown
+    except Exception as e:
+        if debug:
+            elapsed = time.time() - start_time
+            logger.error(f"Error enriching table {table_index + 1} after {elapsed:.2f}s: {e}")
+        # Return original markdown as fallback
+        return table_index, table["text"]
 
 
 def find_spanned_table_groups(tables: List[Table]) -> List[List[Table]]:
@@ -897,26 +985,12 @@ def print_groups_summary(groups: List[List[Table]], debug: bool = False) -> None
 
 def merge_tables(
     tables: List[Table],
-    handle_merge_cell: bool = False,
     debug: bool = False,
-    enrich: bool = False,
 ) -> MergedTable:
     try:
-        # Convert each table's markdown text to a DataFrame and fix merged rows
-        if handle_merge_cell:
-            dfs = [
-                fix_merged_row_df(convert_markdown_to_df(table["text"]))
-                for table in tables
-            ]
-        else:
-            dfs = [convert_markdown_to_df(table["text"]) for table in tables]
-            
-        if enrich:
-            processor = Enrich_VertexAI(
-                credentials_path=os.getenv("CREDENTIALS_PATH")
-            )
-            result_path = "vertex_chat_results.json"
-            
+        # Convert each table's markdown text to a DataFrame
+        # Tables are now pre-enriched if enrich was requested in get_tables_from_pdf_2
+        dfs = [convert_markdown_to_df(table["text"]) for table in tables]
 
         # Handle single-row tables that might have data as column names
         processed_dfs = []
@@ -946,8 +1020,29 @@ def merge_tables(
         # Update dfs to use processed versions
         dfs = processed_dfs
 
+        # Filter out empty DataFrames
+        non_empty_dfs = [df for df in dfs if not df.empty and df.shape[1] > 0]
+        
+        if not non_empty_dfs:
+            # If all DataFrames are empty, return a fallback merged table
+            if debug:
+                logger.warning("All DataFrames are empty, returning fallback table")
+            first_table = tables[0]
+            return MergedTable(
+                text=first_table["text"],
+                page=[first_table["page"]],
+                source=first_table["source"],
+                bbox=[first_table["bbox"]],
+                headers=[get_headers_from_markdown(first_table["text"])],
+                n_rows=first_table["n_rows"],
+                n_columns=first_table["n_columns"],
+                context_before=first_table["context_before"],
+                image_paths=[first_table["image_path"]],
+            )
+
         # Determine the maximum number of columns across all DataFrames
-        max_cols = max(df.shape[1] for df in dfs)
+        max_cols = max(df.shape[1] for df in non_empty_dfs)
+        dfs = non_empty_dfs
 
         # Get headers from the first table to establish consistent column structure
         target_headers = get_headers_from_markdown(tables[0]["text"])
@@ -1066,7 +1161,6 @@ def merge_tables(
 def full_pipeline(
     doc: Union[List[str], List[pymupdf.Document]],
     pages: List[int] = None,
-    handle_merge_cell: bool = False,
     debug: bool = False,
     debug_level: int = 1,
     return_full_tables: bool = False,
@@ -1095,7 +1189,7 @@ def full_pipeline(
 
             if debug:
                 logger.info("   Extracting tables...")
-            tables = get_tables_from_pdf_2(d, pages, debug, debug_level)
+            tables = get_tables_from_pdf_2(d, pages, debug, debug_level, enrich)
             if evaluate:
                 # bỏ đi table cuối cùng
                 tables = tables[:-1]
@@ -1106,7 +1200,7 @@ def full_pipeline(
             if debug:
                 logger.info("   Merging tables...")
             for group in table_groups:
-                merged_table = merge_tables(group, handle_merge_cell, debug, enrich)
+                merged_table = merge_tables(group, debug)
                 merged_tables.append(merged_table)
             if debug:
                 logger.info("   Done!")
@@ -1121,41 +1215,77 @@ def full_pipeline(
 
 
 if __name__ == "__main__":
+    # Set up environment variables
+    if not os.getenv("CREDENTIALS_PATH"):
+        os.environ["CREDENTIALS_PATH"] = "C:/Users/PC/CODE/WDM-AI-TEMIS/key_vertex.json"
+    
     # Example usage with proper file path
     # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/table_filter/input_pdfs/ccc3348504535e22aa44231e57052869.pdf"
-    # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/b014b8ca3c8ee543b655c29747cc6090.pdf"
+    source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/b014b8ca3c8ee543b655c29747cc6090.pdf"
     # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/b4c55e2918d743c7755992b0803d2dbe.pdf"
     # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/c935e2902adf7040a6ffe0db0f7c11e6.pdf"
     # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/notebooks/cross_page_tables/CA Warn Report.pdf"
-    source_path = (
-        "C:/Users/PC/CODE/WDM-AI-TEMIS/data/experiment_data/national-capitals.pdf"
-    )
+    # source_path = (
+    #     "C:/Users/PC/CODE/WDM-AI-TEMIS/data/experiment_data/national-capitals.pdf"
+    # )
 
-    # # Validate file exists before processing
-    # if not os.path.exists(source_path):
-    #     print(f"File not found: {source_path}")
-    # else:
-    #     merged_tables = full_pipeline(
-    #         source_path, debug=True, handle_merge_cell=False, debug_level=2
-    #     )
-    #     with open("test_output.md", "w", encoding="utf-8") as f:
-    #         for table in merged_tables:
-    #             f.write(f"## Tables: {table['context_before']}\n\n")
-    #             f.write(f"**Page:** {table['page']}\n\n")
-    #             f.write(f"{table['text']}\n")
-    #             f.write("\n" + "=" * 100 + "\n\n")
+    # Validate file exists before processing
+    print("ORIGINAL")
+    if not os.path.exists(source_path):
+        print(f"File not found: {source_path}")
+    else:
+        merged_tables = full_pipeline(
+            source_path, pages=[2, 3], debug=True, debug_level=1, enrich=False
+        )
+        for table in merged_tables:
+            print(table['text'])
+            print("\n\n\n\n")
+        # with open("test_output.md", "w", encoding="utf-8") as f:
+        #     for table in merged_tables:
+        #         f.write(f"## Tables: {table['context_before']}\n\n")
+        #         f.write(f"**Page:** {table['page']}\n\n")
+        #         f.write(f"{table['text']}\n")
+        #         f.write("\n" + "=" * 100 + "\n\n")
+    
+    print("ENRICHED")
+    if not os.path.exists(source_path):
+        print(f"File not found: {source_path}")
+    else:
+        merged_tables = full_pipeline(
+            source_path, pages=[2, 3], debug=True, debug_level=1, enrich=True
+        )
+        for table in merged_tables:
+            print(table['text'])
+            print("\n\n\n\n")
+    
+    #### DEBUG INDIVIDUAL TABLES       
+    print("=" * 80)
+    print("DEBUGGING INDIVIDUAL TABLES")
+    print("=" * 80)
+    
+    print("ORIGINAL TABLES:")
+    original_tables = get_tables_from_pdf_2(source_path, pages=[2], debug=False, enrich=False)
+    for i, t in enumerate(original_tables):
+        print(f"--- Original Table {i+1} ---")
+        print(t['text'][:200] + "...")  # First 200 chars
+        print()
 
-    tables = get_tables_from_pdf_2(source_path)
-    table = tables[0]
-    test_markdown_map = {table["image_path"]: table["text"]}
-
-    print(test_markdown_map)
-    processor = Enrich_VertexAI(
-        credentials_path="C:/Users/PC/CODE/WDM-AI-TEMIS/key_vertex.json"
-    )
-
-    result_path = "vertex_chat_results.json"
-
-    results = processor.full_pipeline(source_path, test_markdown_map, result_path)
-    # print("Pipeline completed. Results saved to:", result_path)
-    # print("Results:", results)
+    print("ENRICHED TABLES:")
+    enriched_tables = get_tables_from_pdf_2(source_path, pages=[2], debug=False, enrich=True)
+    for i, t in enumerate(enriched_tables):
+        print(f"--- Enriched Table {i+1} ---")
+        print(t['text'][:200] + "...")  # First 200 chars
+        print()
+    
+    # Compare them
+    print("COMPARISON:")
+    for i in range(len(original_tables)):
+        original_text = original_tables[i]['text']
+        enriched_text = enriched_tables[i]['text']
+        is_different = original_text != enriched_text
+        print(f"Table {i+1} - Different: {is_different}")
+        if is_different:
+            print(f"  Original length: {len(original_text)}")
+            print(f"  Enriched length: {len(enriched_text)}")
+        print()
+    
