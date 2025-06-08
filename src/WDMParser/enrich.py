@@ -9,6 +9,8 @@ from langchain_google_vertexai import ChatVertexAI
 from langchain_core.messages import HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 
+from .utils_retry import retry_network_call
+
 MAX_REQUESTS_PER_KEY = 50
 
 class Enrich_Openrouter:
@@ -144,6 +146,7 @@ class Enrich_Openrouter:
             ]
         })
 
+    @retry_network_call
     def enrich_image(self, api_key, base64_image, markdown_content):
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -157,7 +160,8 @@ class Enrich_Openrouter:
                 model="qwen/qwen2.5-vl-32b-instruct:free",
                 base64_image=base64_image,
                 prompt_text=self.summary_text
-            )
+            ),
+            timeout=60  # Add timeout to prevent hanging
         )
         summary_content = summary_response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
         time.sleep(3)
@@ -170,7 +174,8 @@ class Enrich_Openrouter:
                 base64_image=base64_image,
                 markdown_content=markdown_content,
                 summary_content=summary_content
-            )
+            ),
+            timeout=60  # Add timeout to prevent hanging
         )
         time.sleep(3)
         return final_markdown_response.json().get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -246,6 +251,7 @@ class Enrich_VertexAI:
     def _decode_image(self, base64_image):
         return base64.b64decode(base64_image)
 
+    @retry_network_call
     def prompt_for_summary(self, base64_image):
         image_bytes = self._decode_image(base64_image)
         prompt = [
@@ -258,6 +264,7 @@ class Enrich_VertexAI:
         ]
         return self.output_parser.invoke(self.llm.invoke(prompt))
 
+    @retry_network_call
     def table_markdown_context(self, base64_image, markdown_content, summary_content):
         context_prompt = f"""
         You are given three sources of information related to a single table:

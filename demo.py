@@ -39,10 +39,11 @@ def main():
         debug_level=1,
     )
 
+    pages = [1,2,3,4,5]
     # Demo 1: Extract text
     print("=== DEMO 1: Extracting text ===")
     try:
-        texts = parser.extract_text(pages=[1])  # Extract from first page only
+        texts = parser.extract_text(pages=pages)  # Extract from first page only
         print(f"✅ Extracted text from {len(texts)} pages")
         if texts:
             print(f"Preview: {texts[0]['text'][:200]}...")
@@ -54,7 +55,7 @@ def main():
     # Demo 2: Extract tables (basic)
     print("=== DEMO 2: Extracting tables (basic) ===")
     try:
-        tables = parser.extract_tables(pages=[1])  # Extract from first page only
+        tables = parser.extract_tables(pages=pages)  # Extract from first page only
         print(f"✅ Found {len(tables)} tables")
         for i, table in enumerate(tables):
             print(f"Table {i+1}: {table['n_rows']} rows, {table['n_columns']} columns")
@@ -66,7 +67,7 @@ def main():
     # Demo 3: Extract tables with merging (requires credentials)
     print("=== DEMO 3: Extracting tables with merging ===")
     try:
-        merged_tables = parser.extract_tables(pages=[1], merge_span_tables=True)
+        merged_tables = parser.extract_tables(pages=pages, merge_span_tables=True)
         print(f"✅ Found {len(merged_tables)} merged tables")
         for i, table in enumerate(merged_tables):
             print(f"Merged Table {i+1}: {table['n_rows']} rows, {table['n_columns']} columns")
@@ -78,7 +79,7 @@ def main():
     # Demo 4: Extract tables with enrichment
     print("=== DEMO 4: Extracting tables with enrichment ===")
     try:
-        merged_tables = parser.extract_tables(pages=[1], merge_span_tables=True, enrich=True)
+        merged_tables = parser.extract_tables(pages=pages, merge_span_tables=True, enrich=True)
         print(f"✅ Found {len(merged_tables)} merged tables")
         for i, table in enumerate(merged_tables):
             print(f"Merged Table {i+1}: {table['n_rows']} rows, {table['n_columns']} columns")
@@ -90,7 +91,7 @@ def main():
     # Demo 5: Extract images 
     print("=== DEMO 5: Extracting images ===")
     try:
-        images = parser.extract_images(pages=[1])  # Extract from first page only
+        images = parser.extract_images(pages=pages)  # Extract from first page only
         print(f"✅ Found {len(images)} images")
         for i, image in enumerate(images):
             print(f"Image {i+1}: Page {image['page']}, Size: {len(image['base64_image'])} chars")

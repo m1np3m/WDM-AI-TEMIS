@@ -23,6 +23,7 @@ load_dotenv()
 
 from .enrich import Enrich_VertexAI
 from .credential_helper import validate_credentials_path, print_credentials_help, setup_default_credentials
+from .utils_retry import retry_network_call
 
 IMAGE_OUTPUT_DIR = "C:/Users/PC/CODE/WDM-AI-TEMIS/test_images"
 
@@ -91,6 +92,7 @@ def _get_credentials():
     return _credentials, _project_id
 
 
+@retry_network_call
 def get_is_new_section_context(contexts: List[str], return_prompt: bool = False):
     credentials, project_id = _get_credentials()
     
@@ -184,6 +186,7 @@ def get_is_new_section_context(contexts: List[str], return_prompt: bool = False)
     return json.loads(res.text)
 
 
+@retry_network_call
 def get_is_has_header(
     rows: List[List[str]], first_3_rows: List[str], return_prompt: bool = False
 ):
@@ -1474,89 +1477,3 @@ def full_pipeline(
     if return_full_tables:
         return tables, merged_tables
     return merged_tables
-
-
-if __name__ == "__main__":
-    # Try to setup credentials automatically
-    if not setup_default_credentials():
-        print("WARNING: No Google Cloud credentials found.")
-        print("If you plan to use enrichment features, please set up credentials.")
-        print("For now, running without enrichment...\n")
-        print("For setup instructions, run: python -c 'from src import print_credentials_help; print_credentials_help()'")
-        print()
-
-    # Example usage with proper file path
-    # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/table_filter/input_pdfs/ccc3348504535e22aa44231e57052869.pdf"
-    source_path = (
-        "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/b014b8ca3c8ee543b655c29747cc6090.pdf"
-    )
-    # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/b4c55e2918d743c7755992b0803d2dbe.pdf"
-    # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/c935e2902adf7040a6ffe0db0f7c11e6.pdf"
-    # source_path = "C:/Users/PC/CODE/WDM-AI-TEMIS/notebooks/cross_page_tables/CA Warn Report.pdf"
-    # source_path = (
-    #     "C:/Users/PC/CODE/WDM-AI-TEMIS/data/experiment_data/national-capitals.pdf"
-    # )
-
-    # Validate file exists before processing
-    print("ORIGINAL")
-    if not os.path.exists(source_path):
-        print(f"File not found: {source_path}")
-    else:
-        merged_tables = full_pipeline(
-            source_path, pages=[2, 3], debug=True, debug_level=1, enrich=False
-        )
-        for table in merged_tables:
-            print(table["text"])
-            print("\n\n\n\n")
-        # with open("test_output.md", "w", encoding="utf-8") as f:
-        #     for table in merged_tables:
-        #         f.write(f"## Tables: {table['context_before']}\n\n")
-        #         f.write(f"**Page:** {table['page']}\n\n")
-        #         f.write(f"{table['text']}\n")
-        #         f.write("\n" + "=" * 100 + "\n\n")
-
-    print("ENRICHED")
-    if not os.path.exists(source_path):
-        print(f"File not found: {source_path}")
-    else:
-        merged_tables = full_pipeline(
-            source_path, pages=[2, 3], debug=True, debug_level=1, enrich=True
-        )
-        for table in merged_tables:
-            print(table["text"])
-            print("\n\n\n\n")
-
-    #### DEBUG INDIVIDUAL TABLES
-    print("=" * 80)
-    print("DEBUGGING INDIVIDUAL TABLES")
-    print("=" * 80)
-
-    print("ORIGINAL TABLES:")
-    original_tables = get_tables_from_pdf(
-        source_path, pages=[2], debug=False, enrich=False
-    )
-    for i, t in enumerate(original_tables):
-        print(f"--- Original Table {i + 1} ---")
-        print(t["text"][:200] + "...")  # First 200 chars
-        print()
-
-    print("ENRICHED TABLES:")
-    enriched_tables = get_tables_from_pdf(
-        source_path, pages=[2], debug=False, enrich=True
-    )
-    for i, t in enumerate(enriched_tables):
-        print(f"--- Enriched Table {i + 1} ---")
-        print(t["text"][:200] + "...")  # First 200 chars
-        print()
-
-    # Compare them
-    print("COMPARISON:")
-    for i in range(len(original_tables)):
-        original_text = original_tables[i]["text"]
-        enriched_text = enriched_tables[i]["text"]
-        is_different = original_text != enriched_text
-        print(f"Table {i + 1} - Different: {is_different}")
-        if is_different:
-            print(f"  Original length: {len(original_text)}")
-            print(f"  Enriched length: {len(enriched_text)}")
-        print()

@@ -44,6 +44,13 @@ WDM-AI-TEMIS/
 - ✅ Tất cả enrich functionality được internal hoá trong WDMParser
 - ✅ Utils và WDMParser có thể được sử dụng riêng biệt
 
+### 5. **🔄 Retry Logic & Error Handling**
+- ✅ Tự động retry khi gặp network errors (connection timeout, etc.)
+- ✅ Exponential backoff - thời gian chờ tăng dần giữa các lần retry
+- ✅ Tối đa 5 lần thử lại cho mỗi network call
+- ✅ Log chi tiết các lần retry để debug
+- ✅ Handle các loại lỗi: OSError, ConnectionError, TimeoutError, HTTP errors, GCP errors
+
 ## 📦 Cách sử dụng Package
 
 ### Import cơ bản:
@@ -101,12 +108,14 @@ images = parser.extract_images(pages=[1])
 4. **Testable**: Dễ viết unit tests cho từng module
 5. **Reusable**: Có thể import và sử dụng ở nhiều nơi khác nhau
 6. **🆕 Independent**: WDMParser hoàn toàn độc lập, có thể sử dụng riêng biệt
+7. **🔄 Robust**: Retry logic tự động xử lý network errors, tăng độ tin cậy
 
 ## 🚀 Cách chạy
 
 ### Demo:
 ```bash
-python demo.py
+python demo.py                 # Basic demo
+python demo_with_retry.py      # Demo với retry logic
 ```
 
 ### Production:
