@@ -21,10 +21,8 @@ from tqdm import tqdm
 
 load_dotenv()
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from utils import Enrich_VertexAI
-from credential_helper import validate_credentials_path, print_credentials_help, setup_default_credentials
+from .enrich import Enrich_VertexAI
+from .credential_helper import validate_credentials_path, print_credentials_help, setup_default_credentials
 
 IMAGE_OUTPUT_DIR = "C:/Users/PC/CODE/WDM-AI-TEMIS/test_images"
 

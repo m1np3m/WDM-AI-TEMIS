@@ -107,7 +107,7 @@ class Enrich_Openrouter:
         1. **Raw Extracted Markdown Table**: This is the output from automated table extraction tools. While it contains all the necessary data, its structure may be incorrect — column headers may be misaligned, rows may not match properly, and formatting can be inconsistent.
         Use this only to reference the raw data values, not the structure. Here is the raw extracted markdown table below:
         {markdown_content}
-        2. **Table Summary**: This is a detailed description of the original table's purpose, layout, and the meaning of each column and row.
+        2. **Table Summary**:This is a detailed description of the original table's purpose, layout, and the meaning of each column and row.
         Use this as your primary source to guide the table's structure. Here is the summary of the table:
         {summary_content}
         3. **Table Image (Visual Shortcut)**: This is a visual representation of the actual table. Use it to validate the layout, verify column headers, row alignments, and relationships between data entries.

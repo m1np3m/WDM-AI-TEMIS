@@ -1,12 +1,8 @@
 """Utility functions and classes for WDM-AI-TEMIS project."""
 
-from .enrich import Enrich_VertexAI, Enrich_Openrouter
-import sys
-import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+# Import other utility modules here as needed
+# Note: Enrich classes have been moved to src.WDMParser.enrich
 
 __all__ = [
-    "Enrich_VertexAI",
-    "Enrich_Openrouter", 
+    # Add other utility exports here as needed
 ]

@@ -15,7 +15,7 @@ from merge_table_prompt import MERGE_TABLE_PROMPT
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
-from src.extract_tables import full_pipeline, get_pdf_name, get_tables_from_pdf
+from src.WDMParser.extract_tables import full_pipeline, get_pdf_name, get_tables_from_pdf
 
 
 load_dotenv()
