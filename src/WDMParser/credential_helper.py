@@ -9,8 +9,7 @@ def validate_credentials_path(credentials_path: str = None) -> str:
     
     Args:
         credentials_path: Path to the Google Cloud service account JSON key file.
-                         If None, will try to get from CREDENTIALS_PATH environment variable,
-                         then fallback to default locations.
+                         If None, will try to get from CREDENTIALS_PATH environment variable.
     
     Returns:
         str: Valid credentials path
@@ -21,20 +20,6 @@ def validate_credentials_path(credentials_path: str = None) -> str:
     """
     if credentials_path is None:
         credentials_path = os.getenv("CREDENTIALS_PATH")
-    
-    # If no credentials_path provided and no env var, try default locations
-    if not credentials_path:
-        default_paths = [
-            "key_vertex.json",
-            "service-account-key.json", 
-            "credentials.json",
-            os.path.expanduser("~/key_vertex.json"),
-        ]
-        
-        for path in default_paths:
-            if os.path.exists(path):
-                credentials_path = path
-                break
     
     if not credentials_path:
         raise ValueError(

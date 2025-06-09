@@ -26,7 +26,8 @@ from .credential_helper import validate_credentials_path, print_credentials_help
 from .llm_feat import get_is_new_section_context, get_is_has_header
 from .utils_retry import retry_network_call
 
-IMAGE_OUTPUT_DIR = "C:/Users/Admin/Data/WDM-AI-TEMIS/test_images"
+# Use relative path that works on all machines
+IMAGE_OUTPUT_DIR = "test_images"
 
 
 class WDMTable(TypedDict):
