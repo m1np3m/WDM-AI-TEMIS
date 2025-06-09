@@ -10,12 +10,12 @@ from WDMParser import WDMPDFParser
 
 if __name__ == "__main__":
     parser = WDMPDFParser(
-        file_path="C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/b014b8ca3c8ee543b655c29747cc6090.pdf",
+        file_path="C:/Users/Admin/Data/WDM-AI-TEMIS/data/experiment_data/c935e2902adf7040a6ffe0db0f7c11e6.pdf",
         debug=True,
         debug_level=1,
     )
     
     
-    tables = parser.extract_tables(merge_span_tables=True, enrich=True, pages=[2, 3])
+    tables = parser.extract_tables(merge_span_tables=False, enrich=False, pages=[2, 3])
     for table in tables:
         print(table['text'])
