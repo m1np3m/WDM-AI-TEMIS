@@ -9,7 +9,7 @@ from langchain_google_vertexai import ChatVertexAI
 from langchain_core.messages import HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 
-from .utils_retry import retry_network_call
+from .utils_retry import retry_network_call, retry_vertex_ai_call
 
 MAX_REQUESTS_PER_KEY = 50
 
@@ -251,7 +251,7 @@ class Enrich_VertexAI:
     def _decode_image(self, base64_image):
         return base64.b64decode(base64_image)
 
-    @retry_network_call
+    @retry_vertex_ai_call
     def prompt_for_summary(self, base64_image):
         image_bytes = self._decode_image(base64_image)
         prompt = [
@@ -262,9 +262,12 @@ class Enrich_VertexAI:
                 ]
             )
         ]
-        return self.output_parser.invoke(self.llm.invoke(prompt))
+        result = self.output_parser.invoke(self.llm.invoke(prompt))
+        # Add small delay after successful call to avoid overwhelming API
+        time.sleep(2)
+        return result
 
-    @retry_network_call
+    @retry_vertex_ai_call
     def table_markdown_context(self, base64_image, markdown_content, summary_content):
         context_prompt = f"""
         You are given three sources of information related to a single table:
@@ -285,11 +288,15 @@ class Enrich_VertexAI:
                 ]
             )
         ]
-        return self.output_parser.invoke(self.llm.invoke(prompt))
+        result = self.output_parser.invoke(self.llm.invoke(prompt))
+        # Add small delay after successful call to avoid overwhelming API
+        time.sleep(2)
+        return result
 
     def enrich_image(self, base64_image, markdown_content):
         summary_content = self.prompt_for_summary(base64_image)
-        time.sleep(2)  
+        # Small delay between API calls
+        time.sleep(1)  
         return self.table_markdown_context(base64_image, markdown_content, summary_content)
 
     def full_pipeline(self, file_path, extract_table_markdown, result_path, verbose=1, return_markdown=False):

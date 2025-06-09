@@ -666,7 +666,7 @@ def get_tables_from_pdf(
             start_time = time.time()
             if debug:
                 logger.info(
-                    f"Processing {len(total_tables)} table(s) for enrichment with parallel processing (max 10 concurrent)"
+                    f"Processing {len(total_tables)} table(s) for enrichment with parallel processing"
                 )
 
             processor = Enrich_VertexAI(credentials_path=credentials_path)
@@ -675,8 +675,8 @@ def get_tables_from_pdf(
             # Initialize enriched_markdowns list with None values to maintain order
             enriched_markdowns = [None] * len(total_tables)
 
-            # Use ThreadPoolExecutor for parallel processing with max 10 workers
-            with ThreadPoolExecutor(max_workers=10) as executor:
+            # Use ThreadPoolExecutor for parallel processing with max 2 workers to avoid rate limits
+            with ThreadPoolExecutor(max_workers=5) as executor:
                 # Submit all tasks
                 future_to_index = {
                     executor.submit(
@@ -845,6 +845,10 @@ def enrich_single_table_markdown(
                 f"Enriching table {table_index + 1} from image: {table['image_path']}"
             )
 
+        # Add a small delay before processing to help with rate limiting
+        if table_index > 0:  # Don't delay the first table
+            time.sleep(1)
+            
         enriched_markdown = processor.full_pipeline(
             file_path=table["image_path"],
             extract_table_markdown=table["text"],

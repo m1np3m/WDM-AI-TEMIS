@@ -40,9 +40,29 @@ try:
         gcp_exceptions.DeadlineExceeded,
         gcp_exceptions.InternalServerError,
         gcp_exceptions.TooManyRequests,
+        gcp_exceptions.ResourceExhausted,  # 429 errors
     )
 except ImportError:
     pass
+
+# Also try to catch langchain Vertex AI specific exceptions
+try:
+    from langchain_core.exceptions import LangChainException
+    NETWORK_EXCEPTIONS += (LangChainException,)
+except ImportError:
+    pass
+
+
+def is_rate_limit_error(exception: Exception) -> bool:
+    """Check if the exception is a rate limit (429) error."""
+    error_str = str(exception).lower()
+    return (
+        "429" in error_str or
+        "resource exhausted" in error_str or
+        "too many requests" in error_str or
+        "rate limit" in error_str or
+        "quota exceeded" in error_str
+    )
 
 
 def retry_on_failure(
@@ -78,11 +98,20 @@ def retry_on_failure(
                     last_exception = e
                     
                     if attempt < max_retries:
-                        delay = initial_delay * (backoff_factor ** attempt)
-                        logger.warning(
-                            f"🔄 {func.__name__} failed on attempt {attempt + 1}/{max_retries + 1}: {str(e)}\n"
-                            f"   Retrying in {delay:.1f} seconds..."
-                        )
+                        # Special handling for rate limit errors (429)
+                        if is_rate_limit_error(e):
+                            # Longer delay for rate limit errors
+                            delay = max(10.0, initial_delay * (backoff_factor ** attempt) * 2)
+                            logger.warning(
+                                f"🔄 {func.__name__} hit rate limit on attempt {attempt + 1}/{max_retries + 1}: {str(e)}\n"
+                                f"   Rate limit detected, waiting {delay:.1f} seconds before retry..."
+                            )
+                        else:
+                            delay = initial_delay * (backoff_factor ** attempt)
+                            logger.warning(
+                                f"🔄 {func.__name__} failed on attempt {attempt + 1}/{max_retries + 1}: {str(e)}\n"
+                                f"   Retrying in {delay:.1f} seconds..."
+                            )
                         time.sleep(delay)
                     else:
                         logger.error(
@@ -134,5 +163,13 @@ retry_api_call_aggressive = retry_on_failure(
     max_retries=7,
     backoff_factor=3.0,
     initial_delay=2.0,
+    retry_on=NETWORK_EXCEPTIONS
+)
+
+# Special decorator for Vertex AI calls with longer delays for rate limits
+retry_vertex_ai_call = retry_on_failure(
+    max_retries=6,
+    backoff_factor=2.0,
+    initial_delay=5.0,  # Longer initial delay
     retry_on=NETWORK_EXCEPTIONS
 ) 
