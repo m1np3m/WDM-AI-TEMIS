@@ -395,6 +395,9 @@ def process_single_page(
         page_tables = []
 
         if tables:
+            # Ensure IMAGE_OUTPUT_DIR exists
+            os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
+            
             for idx, table in enumerate(tables):
                 bbox = table.bbox
                 # lấy hình ảnh ra
