@@ -10,7 +10,8 @@ from WDMParser import WDMPDFParser
 
 if __name__ == "__main__":
     parser = WDMPDFParser(
-        file_path="C:/Users/PC/CODE/WDM-AI-TEMIS/data/experiment_data/b014b8ca3c8ee543b655c29747cc6090.pdf",
+        file_path="data/experiment_data/b014b8ca3c8ee543b655c29747cc6090.pdf",
+        credential_path="key_vertex.json",  # Explicit credential path
         debug=True,
         debug_level=1,
     )
