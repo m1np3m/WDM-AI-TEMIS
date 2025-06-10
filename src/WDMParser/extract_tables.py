@@ -593,7 +593,7 @@ def get_tables_from_pdf(
                     res, prompt_contexts = get_is_new_section_context(
                         [context for _, context in contexts], return_prompt=True
                     )
-                    if len(res["is_new_section_context"]) == len(contexts):
+                    if len(res) == len(contexts):
                         break
                     if debug:
                         logger.warning(
@@ -605,7 +605,7 @@ def get_tables_from_pdf(
                             "Failed to get correct response length from get_is_new_section_context after retries."
                         )
 
-                for (i, _), is_new in zip(contexts, res["is_new_section_context"]):
+                for (i, _), is_new in zip(contexts, res):
                     total_tables[i]["is_new_section_context"] = is_new
 
                 # Retry logic for get_is_has_header
@@ -616,7 +616,7 @@ def get_tables_from_pdf(
                     res, prompt_headers = get_is_has_header(
                         headers, first_3_rows, return_prompt=True
                     )
-                    if len(res["is_has_header"]) == len(headers):
+                    if len(res) == len(headers):
                         break
                     if debug:
                         logger.warning(
@@ -628,7 +628,7 @@ def get_tables_from_pdf(
                             "Failed to get correct response length from get_is_has_header after retries."
                         )
 
-                for table, is_has in zip(total_tables, res["is_has_header"]):
+                for table, is_has in zip(total_tables, res):
                     table["is_has_header"] = is_has
                     
             finally:
