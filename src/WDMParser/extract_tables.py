@@ -26,7 +26,8 @@ from .credential_helper import validate_credentials_path, print_credentials_help
 from .llm_feat import get_is_new_section_context, get_is_has_header
 from .utils_retry import retry_network_call
 
-IMAGE_OUTPUT_DIR = "C:/Users/Admin/Data/WDM-AI-TEMIS/test_images"
+# Use relative path that works on all machines
+IMAGE_OUTPUT_DIR = "test_images"
 
 
 class WDMTable(TypedDict):
@@ -394,6 +395,9 @@ def process_single_page(
         page_tables = []
 
         if tables:
+            # Ensure IMAGE_OUTPUT_DIR exists
+            os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
+            
             for idx, table in enumerate(tables):
                 bbox = table.bbox
                 # lấy hình ảnh ra
@@ -490,6 +494,7 @@ def get_tables_from_pdf(
     debug_level: int = 1,
     enrich: bool = False,
     use_ai_analysis: bool = True,
+    credential_path: str = None,
 ) -> List[WDMTable]:
     # Convert Document object to file path if needed
     if isinstance(doc, pymupdf.Document):
@@ -570,62 +575,71 @@ def get_tables_from_pdf(
     
     # AI-powered analysis (requires credentials)
     if use_ai_analysis:
-        try:
-            validate_credentials_path()
+        if credential_path and os.path.exists(credential_path):
+            # Set environment variable temporarily for the AI functions
+            original_cred_path = os.getenv("CREDENTIALS_PATH")
+            os.environ["CREDENTIALS_PATH"] = credential_path
             
-            contexts = [
-                (i, table["context_before"])
-                for i, table in enumerate(total_tables)
-                if table["context_before"] != ""
-            ]
+            try:
+                contexts = [
+                    (i, table["context_before"])
+                    for i, table in enumerate(total_tables)
+                    if table["context_before"] != ""
+                ]
 
-            # Retry logic for get_is_new_section_context
-            max_retries = 5
-            for attempt in range(max_retries):
-                res, prompt_contexts = get_is_new_section_context(
-                    [context for _, context in contexts], return_prompt=True
-                )
-                if len(res["is_new_section_context"]) == len(contexts):
-                    break
-                if debug:
-                    logger.warning(
-                        f"Retry {attempt + 1}/{max_retries} for get_is_new_section_context due to length mismatch."
+                # Retry logic for get_is_new_section_context
+                max_retries = 5
+                for attempt in range(max_retries):
+                    res, prompt_contexts = get_is_new_section_context(
+                        [context for _, context in contexts], return_prompt=True
                     )
-            else:
-                if debug:
-                    logger.error(
-                        "Failed to get correct response length from get_is_new_section_context after retries."
-                    )
+                    if len(res["is_new_section_context"]) == len(contexts):
+                        break
+                    if debug:
+                        logger.warning(
+                            f"Retry {attempt + 1}/{max_retries} for get_is_new_section_context due to length mismatch."
+                        )
+                else:
+                    if debug:
+                        logger.error(
+                            "Failed to get correct response length from get_is_new_section_context after retries."
+                        )
 
-            for (i, _), is_new in zip(contexts, res["is_new_section_context"]):
-                total_tables[i]["is_new_section_context"] = is_new
+                for (i, _), is_new in zip(contexts, res["is_new_section_context"]):
+                    total_tables[i]["is_new_section_context"] = is_new
 
-            # Retry logic for get_is_has_header
-            first_3_rows = [
-                get_n_rows_from_markdown(table["text"], 3) for table in total_tables
-            ]
-            for attempt in range(max_retries):
-                res, prompt_headers = get_is_has_header(
-                    headers, first_3_rows, return_prompt=True
-                )
-                if len(res["is_has_header"]) == len(headers):
-                    break
-                if debug:
-                    logger.warning(
-                        f"Retry {attempt + 1}/{max_retries} for get_is_has_header due to length mismatch."
+                # Retry logic for get_is_has_header
+                first_3_rows = [
+                    get_n_rows_from_markdown(table["text"], 3) for table in total_tables
+                ]
+                for attempt in range(max_retries):
+                    res, prompt_headers = get_is_has_header(
+                        headers, first_3_rows, return_prompt=True
                     )
-            else:
-                if debug:
-                    logger.error(
-                        "Failed to get correct response length from get_is_has_header after retries."
-                    )
+                    if len(res["is_has_header"]) == len(headers):
+                        break
+                    if debug:
+                        logger.warning(
+                            f"Retry {attempt + 1}/{max_retries} for get_is_has_header due to length mismatch."
+                        )
+                else:
+                    if debug:
+                        logger.error(
+                            "Failed to get correct response length from get_is_has_header after retries."
+                        )
 
-            for table, is_has in zip(total_tables, res["is_has_header"]):
-                table["is_has_header"] = is_has
-                
-        except (ValueError, FileNotFoundError) as e:
+                for table, is_has in zip(total_tables, res["is_has_header"]):
+                    table["is_has_header"] = is_has
+                    
+            finally:
+                # Restore original environment variable
+                if original_cred_path:
+                    os.environ["CREDENTIALS_PATH"] = original_cred_path
+                else:
+                    os.environ.pop("CREDENTIALS_PATH", None)
+        else:
             if debug:
-                logger.warning(f"AI analysis disabled due to credentials issue: {e}")
+                logger.warning("AI analysis disabled: no valid credential_path provided")
             # Set default values when AI analysis is not available
             for table in total_tables:
                 table["is_new_section_context"] = False
@@ -660,85 +674,87 @@ def get_tables_from_pdf(
         if debug:
             logger.info(f"Starting enrichment of {len(total_tables)} tables...")
 
-        try:
-            credentials_path = validate_credentials_path()
-            
-            start_time = time.time()
+        if not credential_path or not os.path.exists(credential_path):
             if debug:
-                logger.info(
-                    f"Processing {len(total_tables)} table(s) for enrichment with parallel processing"
-                )
+                logger.error("Error during enrichment: no valid credential_path provided, keeping original markdown")
+        else:
+            try:
+                start_time = time.time()
+                if debug:
+                    logger.info(
+                        f"Processing {len(total_tables)} table(s) for enrichment with parallel processing"
+                    )
 
-            processor = Enrich_VertexAI(credentials_path=credentials_path)
-            result_path = "vertex_chat_results.json"
+                processor = Enrich_VertexAI(credentials_path=credential_path)
+                result_path = "vertex_chat_results.json"
 
-            # Initialize enriched_markdowns list with None values to maintain order
-            enriched_markdowns = [None] * len(total_tables)
+                # Initialize enriched_markdowns list with None values to maintain order
+                enriched_markdowns = [None] * len(total_tables)
 
-            # Use ThreadPoolExecutor for parallel processing with max 2 workers to avoid rate limits
-            with ThreadPoolExecutor(max_workers=5) as executor:
-                # Submit all tasks
-                future_to_index = {
-                    executor.submit(
-                        enrich_single_table_markdown,
-                        processor,
-                        table,
-                        result_path,
-                        i,
-                        debug,
-                    ): i
-                    for i, table in enumerate(total_tables)
-                }
+                # Use ThreadPoolExecutor for parallel processing with max 2 workers to avoid rate limits
+                with ThreadPoolExecutor(max_workers=5) as executor:
+                    # Submit all tasks
+                    future_to_index = {
+                        executor.submit(
+                            enrich_single_table_markdown,
+                            processor,
+                            table,
+                            result_path,
+                            i,
+                            debug,
+                        ): i
+                        for i, table in enumerate(total_tables)
+                    }
 
-                # Process completed tasks with progress tracking
-                completed_count = 0
-                for future in as_completed(future_to_index):
-                    try:
-                        table_index, enriched_markdown = future.result()
-                        enriched_markdowns[table_index] = enriched_markdown
-                        completed_count += 1
+                    # Process completed tasks with progress tracking
+                    completed_count = 0
+                    for future in as_completed(future_to_index):
+                        try:
+                            table_index, enriched_markdown = future.result()
+                            enriched_markdowns[table_index] = enriched_markdown
+                            completed_count += 1
+                            if debug:
+                                logger.info(
+                                    f"Completed {completed_count}/{len(total_tables)} table enrichments"
+                                )
+                        except Exception as exc:
+                            table_index = future_to_index[future]
+                            if debug:
+                                logger.error(
+                                    f"Table {table_index + 1} generated an exception: {exc}"
+                                )
+                            # Use original markdown as fallback
+                            enriched_markdowns[table_index] = total_tables[table_index][
+                                "text"
+                            ]
+
+                if debug:
+                    elapsed_time = time.time() - start_time
+                    logger.info(
+                        f"All table enrichments completed in {elapsed_time:.2f}s (avg: {elapsed_time / len(total_tables):.2f}s per table)"
+                    )
+
+                # Ensure no None values in enriched_markdowns (fallback for any failed enrichments)
+                for i, enriched_markdown in enumerate(enriched_markdowns):
+                    if enriched_markdown is None:
                         if debug:
-                            logger.info(
-                                f"Completed {completed_count}/{len(total_tables)} table enrichments"
+                            logger.warning(
+                                f"Table {i + 1} enrichment was None, using original markdown"
                             )
-                    except Exception as exc:
-                        table_index = future_to_index[future]
-                        if debug:
-                            logger.error(
-                                f"Table {table_index + 1} generated an exception: {exc}"
-                            )
-                        # Use original markdown as fallback
-                        enriched_markdowns[table_index] = total_tables[table_index][
-                            "text"
-                        ]
+                        enriched_markdowns[i] = total_tables[i]["text"]
 
-            if debug:
-                elapsed_time = time.time() - start_time
-                logger.info(
-                    f"All table enrichments completed in {elapsed_time:.2f}s (avg: {elapsed_time / len(total_tables):.2f}s per table)"
-                )
+                # Update tables with enriched markdown
+                for i, enriched_markdown in enumerate(enriched_markdowns):
+                    total_tables[i]["text"] = enriched_markdown
 
-            # Ensure no None values in enriched_markdowns (fallback for any failed enrichments)
-            for i, enriched_markdown in enumerate(enriched_markdowns):
-                if enriched_markdown is None:
-                    if debug:
-                        logger.warning(
-                            f"Table {i + 1} enrichment was None, using original markdown"
-                        )
-                    enriched_markdowns[i] = total_tables[i]["text"]
+                if debug:
+                    logger.info("All tables updated with enriched content")
 
-            # Update tables with enriched markdown
-            for i, enriched_markdown in enumerate(enriched_markdowns):
-                total_tables[i]["text"] = enriched_markdown
-
-            if debug:
-                logger.info("All tables updated with enriched content")
-
-        except Exception as e:
-            if debug:
-                logger.error(
-                    f"Error during enrichment: {e}, keeping original markdown"
-                )
+            except Exception as e:
+                if debug:
+                    logger.error(
+                        f"Error during enrichment: {e}, keeping original markdown"
+                    )
 
     return total_tables
 
@@ -1179,6 +1195,7 @@ def full_pipeline(
     return_full_tables: bool = False,
     evaluate: bool = False,
     enrich: bool = False,
+    credential_path: str = None,
 ) -> Union[List[WDMMergedTable], Tuple[List[WDMTable], List[WDMMergedTable]]]:
     merged_tables = []
 
@@ -1203,7 +1220,7 @@ def full_pipeline(
             if debug:
                 logger.info("   Extracting tables...")
             # For full_pipeline (merge_span_tables=True), always use AI analysis
-            tables = get_tables_from_pdf(d, pages, debug, debug_level, enrich, use_ai_analysis=True)
+            tables = get_tables_from_pdf(d, pages, debug, debug_level, enrich, use_ai_analysis=True, credential_path=credential_path)
             if evaluate:
                 # bỏ đi table cuối cùng
                 tables = tables[:-1]

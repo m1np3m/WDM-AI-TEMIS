@@ -29,10 +29,12 @@ class WDMPDFParser:
     def __init__(
         self,
         file_path: str = None,
+        credential_path: str = None,
         debug: bool = False,
         debug_level: int = 1,
     ):
         self.file_path = file_path
+        self.credential_path = credential_path
         self.debug = debug
         self.debug_level = debug_level
 
@@ -44,22 +46,27 @@ class WDMPDFParser:
     ) -> List[WDMTable | WDMMergedTable]:
         # Check credentials if advanced features are requested
         if merge_span_tables or enrich:
-            try:
-                from .credential_helper import validate_credentials_path
-
-                validate_credentials_path()
-                if self.debug:
-                    print("✅ Credentials validated successfully")
-            except (ValueError, FileNotFoundError) as e:
+            if not self.credential_path:
                 error_msg = (
                     f"❌ Credentials required for advanced features (merge_span_tables={merge_span_tables}, enrich={enrich})\n"
-                    f"Error: {str(e)}\n\n"
-                    "💡 Quick fix options:\n"
-                    "1. Set environment variable: export CREDENTIALS_PATH='/path/to/your/key.json'\n"
-                    "2. Place your Google Cloud service account key file as 'key_vertex.json' in project root\n"
-                    "3. Run: python -c 'from src import print_credentials_help; print_credentials_help()' for detailed setup\n"
+                    f"Please provide credential_path parameter when initializing WDMPDFParser:\n\n"
+                    "💡 Example:\n"
+                    "parser = WDMPDFParser(\n"
+                    "    file_path='your_file.pdf',\n"
+                    "    credential_path='/path/to/your/service-account-key.json'\n"
+                    ")\n"
                 )
-                raise ValueError(error_msg) from e
+                raise ValueError(error_msg)
+            
+            # Validate credentials file exists
+            if not os.path.exists(self.credential_path):
+                raise FileNotFoundError(
+                    f"Credentials file not found: {self.credential_path}\n"
+                    "Please ensure the path is correct and the file exists."
+                )
+            
+            if self.debug:
+                print(f"✅ Using credentials: {self.credential_path}")
 
         if merge_span_tables:
             return full_pipeline(
@@ -68,9 +75,10 @@ class WDMPDFParser:
                 debug=self.debug,
                 debug_level=self.debug_level,
                 enrich=enrich,
+                credential_path=self.credential_path,
             )
         else:
-            # Use AI analysis when credentials are available OR when it's explicitly requested
+            # Use AI analysis when credentials are available
             use_ai_analysis = merge_span_tables or enrich
             return get_tables_from_pdf(
                 self.file_path,
@@ -79,6 +87,7 @@ class WDMPDFParser:
                 debug_level=self.debug_level,
                 enrich=enrich,
                 use_ai_analysis=use_ai_analysis,
+                credential_path=self.credential_path,
             )
 
     def extract_text(self, pages: List[int] = None) -> str:
