@@ -3,8 +3,11 @@ import os
 from typing import List
 
 from google.oauth2 import service_account
-from google import genai
-from google.genai import types
+
+from langchain_google_vertexai import ChatVertexAI
+from langchain_core.output_parsers import PydanticOutputParser
+from pydantic import BaseModel, Field
+from langchain_core.prompts import PromptTemplate
 
 
 from .utils_retry import retry_network_call
@@ -12,130 +15,128 @@ from .utils_retry import retry_network_call
 _credentials = None
 _project_id = None
 
+
+class IsNewSectionContext(BaseModel):
+    is_new_section_context: List[bool] = Field(
+        description="List of boolean values indicating whether the context indicates a new section, item, or table"
+    )
+
+
+class IsHasHeader(BaseModel):
+    is_has_header: List[bool] = Field(
+        description="List of boolean values indicating whether the table has a header"
+    )
+
+
 def _get_credentials():
     """Lazy load credentials when needed."""
     global _credentials, _project_id
-    
+
     if _credentials is None:
         credentials_path = os.getenv("CREDENTIALS_PATH")
         _project_id = os.getenv("VERTEXAI_PROJECT_ID")
-        
+
         if not credentials_path:
             raise ValueError(
                 "CREDENTIALS_PATH environment variable is not set. "
                 "Please set it to the path of your Google Cloud service account JSON key file."
             )
-        
+
         if not os.path.exists(credentials_path):
             raise FileNotFoundError(
                 f"Credentials file not found at: {credentials_path}. "
                 "Please ensure the path is correct and the file exists."
             )
-        
+
         # Set up credentials with proper scopes for Vertex AI
         scopes = [
             "https://www.googleapis.com/auth/cloud-platform",
             "https://www.googleapis.com/auth/generative-language",
         ]
-        
+
         _credentials = service_account.Credentials.from_service_account_file(
             credentials_path, scopes=scopes
         )
-    
+
     return _credentials, _project_id
+
 
 @retry_network_call
 def get_is_new_section_context(contexts: List[str], return_prompt: bool = False):
     credentials, project_id = _get_credentials()
-    
-    client = genai.Client(
-        vertexai=True,
-        project=project_id,
-        location="us-central1",  # Changed from "global" to a specific region
+    model = "gemini-2.0-flash-001"
+
+    llm = ChatVertexAI(
+        model=model,
+        temperature=0,
+        max_tokens=8192,
         credentials=credentials,
     )
 
-    si_text1 = (
-        "You are an expert in document structure analysis. Your task is to examine text segments that appear "
-        "immediately before tables or sections, and determine if they clearly indicate the start of a new section, "
-        "item, or table.\n\n"
-        "You will be provided with a numbered list of contexts (Context 1, Context 2, etc.). Each context is the text "
-        "that appears immediately before a table in a document. You need to return a list of boolean values (True or "
-        "False) of the same length, where each boolean corresponds to your decision for the context at the respective "
-        "position (Context 1 → first boolean, Context 2 → second boolean, etc.).\n\n"
-        "Criteria for deciding True (Indicates new section/table):\n"
-        "- Clear title or heading\n"
-        '- Structured heading (e.g., "Chapter 1", "Section A", "Table 1: ...")\n'
-        "- Introductory context that clearly introduces a new topic/section\n\n"
-        "Criteria for deciding False (Does NOT indicate new section/table):\n"
-        "- Empty context (marked as [EMPTY])\n"
-        "- Seamless content continuation from previous text\n"
-        "- No structured heading or title\n"
-        "- Just data or supplementary description\n"
-        "- Fragment of previous content\n\n"
-        "Requirements:\n"
-        "- Analyze each numbered context individually\n"
-        "- Apply the above criteria to decide True or False for each context\n"
-        "- Always return False for [EMPTY] contexts\n"
-        "- Return the result as a list of boolean values in the same order as the input contexts\n"
-        "- The output list must have exactly the same length as the input list"
-    )
+    output_parser = PydanticOutputParser(pydantic_object=IsNewSectionContext)
 
-    model = "gemini-2.0-flash-001"
+    template = """You are an expert in document structure analysis. Your task is to examine text segments that appear 
+immediately before tables or sections, and determine if they clearly indicate the start of a new section, 
+item, or table.
+
+You will be provided with a numbered list of contexts (Context 1, Context 2, etc.). Each context is the text 
+that appears immediately before a table in a document. You need to return a list of boolean values (True or 
+False) of the same length, where each boolean corresponds to your decision for the context at the respective 
+position (Context 1 → first boolean, Context 2 → second boolean, etc.).
+
+Criteria for deciding True (Indicates new section/table):
+- Clear title or heading
+- Structured heading (e.g., "Chapter 1", "Section A", "Table 1: ...")
+- Introductory context that clearly introduces a new topic/section
+
+Criteria for deciding False (Does NOT indicate new section/table):
+- Empty context (marked as [EMPTY])
+- Seamless content continuation from previous text
+- No structured heading or title
+- Just data or supplementary description
+- Fragment of previous content
+
+Requirements:
+- Analyze each numbered context individually
+- Apply the above criteria to decide True or False for each context
+- Always return False for [EMPTY] contexts
+- Return the result as a list of boolean values in the same order as the input contexts
+- The output list must have exactly the same length as the input list
+### List of Contexts Before Tables:
+
+{contexts_text}
+
+### Total number of contexts: {len_contexts}\n{format_instruction}"""
+
+    prompt_template = PromptTemplate(
+        template=template,
+        input_variables=["contexts_text", "len_contexts"],
+        partial_variables={
+            "format_instruction": output_parser.get_format_instructions()
+        },
+    )
 
     # Format contexts with clear indexing
     formatted_contexts = [
         f"Context {i}:\n{context.strip() if context.strip() else '[EMPTY]'}"
         for i, context in enumerate(contexts, 1)
     ]
-
     contexts_text = "\n\n".join(formatted_contexts)
 
-    input_text = f"\n\n### List of Contexts Before Tables:\n\n{contexts_text}\n\n### Total number of contexts: {len(contexts)}"
-
-    contents = [
-        types.Content(
-            role="user",
-            parts=[types.Part.from_text(text=input_text)],
-        ),
-    ]
-
-    generate_content_config = types.GenerateContentConfig(
-        temperature=0,
-        top_p=1,
-        max_output_tokens=8192,
-        safety_settings=[
-            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="OFF"),
-            types.SafetySetting(
-                category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="OFF"
-            ),
-            types.SafetySetting(
-                category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="OFF"
-            ),
-            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="OFF"),
-        ],
-        response_mime_type="application/json",
-        response_schema={
-            "type": "OBJECT",
-            "required": ["is_new_section_context"],
-            "properties": {
-                "is_new_section_context": {
-                    "type": "ARRAY",
-                    "items": {"type": "BOOLEAN"},
-                }
-            },
-        },
-        system_instruction=[types.Part.from_text(text=si_text1)],
-    )
-
-    res = client.models.generate_content(
-        model=model,
-        contents=contents,
-        config=generate_content_config,
+    chain = prompt_template | llm | output_parser
+    res = chain.invoke(
+        input={
+            "contexts_text": contexts_text,
+            "len_contexts": len(contexts),
+        }
     )
     if return_prompt:
-        return json.loads(res.text), si_text1 + input_text
-    return json.loads(res.text)
+        return res.is_new_section_context, prompt_template.format(
+            contexts_text=contexts_text,
+            len_contexts=len(contexts),
+        )
+
+    return res.is_new_section_context
 
 
 @retry_network_call
@@ -143,51 +144,18 @@ def get_is_has_header(
     rows: List[List[str]], first_3_rows: List[str], return_prompt: bool = False
 ):
     credentials, project_id = _get_credentials()
-    
-    client = genai.Client(
-        vertexai=True,
-        project=project_id,
-        location="us-central1",  # Changed from "global" to a specific region
+    model = "gemini-2.0-flash-001"
+
+    llm = ChatVertexAI(
+        model=model,
+        temperature=0,
+        max_tokens=8192,
         credentials=credentials,
-        #
     )
 
-    model = "gemini-2.0-flash"
+    output_parser = PydanticOutputParser(pydantic_object=IsHasHeader)
 
-    # Format table information with both headers and context
-    formatted_tables = []
-    for i, (header_row, table_context) in enumerate(zip(rows, first_3_rows), 1):
-        # Format header row
-        if header_row:
-            formatted_cells = []
-            for cell in header_row:
-                cell_content = str(cell).strip() if cell else ""
-                formatted_cells.append(cell_content if cell_content else "[EMPTY_CELL]")
-            header_text = " | ".join(formatted_cells)
-        else:
-            header_text = "[NO_HEADER_EXTRACTED]"
-
-        # Format table context (first 3 rows in markdown)
-        table_preview = table_context.strip() if table_context else "[EMPTY_TABLE]"
-
-        formatted_table = f"""\nTable {i}:
-Header Row: {header_text}
-Table Preview (First 3 rows):
-{table_preview}"""
-
-        formatted_tables.append(formatted_table)
-
-    tables_text = "\n\n" + "=" * 50 + "\n\n".join(formatted_tables)
-
-    input_text = f"\n\n### Tables Analysis:\n{tables_text}\n\n### Total number of tables: {len(rows)}"
-    contents = [
-        types.Content(
-            role="user",
-            parts=[types.Part.from_text(text=input_text)],
-        ),
-    ]
-
-    si_text = """You are an expert in analyzing table data structures. Your task is to examine tables and determine if their first row contains meaningful column headers.
+    template = """You are an expert in analyzing table data structures. Your task is to examine tables and determine if their first row contains meaningful column headers.
 
 You will receive information about multiple tables. For each table, you'll see:
 1. "Header Row": The extracted first row that might be headers
@@ -225,38 +193,53 @@ A meaningful header row contains column names that describe the type of data tha
 - Analyze each table individually using both the header row and table preview
 - Return exactly one boolean per table in the same order as input
 - The output list must have exactly the same length as the input list
-- Be conservative: when in doubt, prefer False unless clearly header-like content"""
+- Be conservative: when in doubt, prefer False unless clearly header-like content
+### Tables Analysis:
 
-    generate_content_config = types.GenerateContentConfig(
-        temperature=0,
-        top_p=1,
-        max_output_tokens=8192,
-        safety_settings=[
-            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="OFF"),
-            types.SafetySetting(
-                category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="OFF"
-            ),
-            types.SafetySetting(
-                category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="OFF"
-            ),
-            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="OFF"),
-        ],
-        response_mime_type="application/json",
-        response_schema={
-            "type": "OBJECT",
-            "required": ["is_has_header"],
-            "properties": {
-                "is_has_header": {"type": "ARRAY", "items": {"type": "BOOLEAN"}}
-            },
+{tables_text}
+
+### Total number of tables: {len_rows}
+{format_instruction}"""
+
+    prompt_template = PromptTemplate(
+        template=template,
+        input_variables=["tables_text", "len_rows"],
+        partial_variables={
+            "format_instruction": output_parser.get_format_instructions()
         },
-        system_instruction=[types.Part.from_text(text=si_text)],
     )
 
-    res = client.models.generate_content(
-        model=model,
-        contents=contents,
-        config=generate_content_config,
-    )
+    # Format table information with both headers and context
+    formatted_tables = []
+    for i, (header_row, table_context) in enumerate(zip(rows, first_3_rows), 1):
+        # Format header row
+        if header_row:
+            formatted_cells = []
+            for cell in header_row:
+                cell_content = str(cell).strip() if cell else ""
+                formatted_cells.append(cell_content if cell_content else "[EMPTY_CELL]")
+            header_text = " | ".join(formatted_cells)
+        else:
+            header_text = "[NO_HEADER_EXTRACTED]"
+
+        # Format table context (first 3 rows in markdown)
+        table_preview = table_context.strip() if table_context else "[EMPTY_TABLE]"
+
+        formatted_table = f"""Table {i}:
+Header Row: {header_text}
+Table Preview (First 3 rows):
+{table_preview}"""
+
+        formatted_tables.append(formatted_table)
+
+    tables_text = "\n\n".join(formatted_tables)
+
+    chain = prompt_template | llm | output_parser
+    res = chain.invoke(input={"tables_text": tables_text, "len_rows": len(rows)})
+
     if return_prompt:
-        return json.loads(res.text), si_text + input_text
-    return json.loads(res.text)
+        return res.is_has_header, prompt_template.format(
+            tables_text=tables_text, len_rows=len(rows)
+        )
+
+    return res.is_has_header

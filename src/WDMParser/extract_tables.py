@@ -1,7 +1,5 @@
-import json
 import os
 import re
-import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import StringIO
@@ -12,20 +10,14 @@ import numpy as np
 import pandas as pd
 import pymupdf  # PyMuPDF
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
-from google.oauth2 import service_account
 from loguru import logger
 from markdown import markdown
 from tqdm import tqdm
 
-load_dotenv()
-
 from .enrich import Enrich_VertexAI
-from .credential_helper import validate_credentials_path, print_credentials_help, setup_default_credentials
-from .llm_feat import get_is_new_section_context, get_is_has_header
-from .utils_retry import retry_network_call
+from .llm_feat import get_is_has_header, get_is_new_section_context
 
+load_dotenv()
 # Use relative path that works on all machines
 IMAGE_OUTPUT_DIR = "test_images"
 
@@ -53,8 +45,6 @@ class WDMMergedTable(TypedDict):
     n_columns: int  # Max n_columns from original tables, text padded to this
     context_before: str
     image_paths: List[str]
-
-
 
 
 def get_pdf_name(source: str) -> str:
@@ -397,7 +387,7 @@ def process_single_page(
         if tables:
             # Ensure IMAGE_OUTPUT_DIR exists
             os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
-            
+
             for idx, table in enumerate(tables):
                 bbox = table.bbox
                 # lấy hình ảnh ra
@@ -568,18 +558,18 @@ def get_tables_from_pdf(
     headers = [get_headers_from_markdown(table["text"]) for table in total_tables]
     # Post process: remove Col1, Col2, Col3, etc.
     headers = [[re.sub(r"^Col\d+", "", col) for col in header] for header in headers]
-    
+
     # Initialize debug variables
     prompt_contexts = ""
     prompt_headers = ""
-    
+
     # AI-powered analysis (requires credentials)
     if use_ai_analysis:
         if credential_path and os.path.exists(credential_path):
             # Set environment variable temporarily for the AI functions
             original_cred_path = os.getenv("CREDENTIALS_PATH")
             os.environ["CREDENTIALS_PATH"] = credential_path
-            
+
             try:
                 contexts = [
                     (i, table["context_before"])
@@ -593,7 +583,7 @@ def get_tables_from_pdf(
                     res, prompt_contexts = get_is_new_section_context(
                         [context for _, context in contexts], return_prompt=True
                     )
-                    if len(res["is_new_section_context"]) == len(contexts):
+                    if len(res) == len(contexts):
                         break
                     if debug:
                         logger.warning(
@@ -605,7 +595,7 @@ def get_tables_from_pdf(
                             "Failed to get correct response length from get_is_new_section_context after retries."
                         )
 
-                for (i, _), is_new in zip(contexts, res["is_new_section_context"]):
+                for (i, _), is_new in zip(contexts, res):
                     total_tables[i]["is_new_section_context"] = is_new
 
                 # Retry logic for get_is_has_header
@@ -616,7 +606,7 @@ def get_tables_from_pdf(
                     res, prompt_headers = get_is_has_header(
                         headers, first_3_rows, return_prompt=True
                     )
-                    if len(res["is_has_header"]) == len(headers):
+                    if len(res) == len(headers):
                         break
                     if debug:
                         logger.warning(
@@ -628,9 +618,9 @@ def get_tables_from_pdf(
                             "Failed to get correct response length from get_is_has_header after retries."
                         )
 
-                for table, is_has in zip(total_tables, res["is_has_header"]):
+                for table, is_has in zip(total_tables, res):
                     table["is_has_header"] = is_has
-                    
+
             finally:
                 # Restore original environment variable
                 if original_cred_path:
@@ -639,7 +629,9 @@ def get_tables_from_pdf(
                     os.environ.pop("CREDENTIALS_PATH", None)
         else:
             if debug:
-                logger.warning("AI analysis disabled: no valid credential_path provided")
+                logger.warning(
+                    "AI analysis disabled: no valid credential_path provided"
+                )
             # Set default values when AI analysis is not available
             for table in total_tables:
                 table["is_new_section_context"] = False
@@ -676,7 +668,9 @@ def get_tables_from_pdf(
 
         if not credential_path or not os.path.exists(credential_path):
             if debug:
-                logger.error("Error during enrichment: no valid credential_path provided, keeping original markdown")
+                logger.error(
+                    "Error during enrichment: no valid credential_path provided, keeping original markdown"
+                )
         else:
             try:
                 start_time = time.time()
@@ -864,7 +858,7 @@ def enrich_single_table_markdown(
         # Add a small delay before processing to help with rate limiting
         if table_index > 0:  # Don't delay the first table
             time.sleep(1)
-            
+
         enriched_markdown = processor.full_pipeline(
             file_path=table["image_path"],
             extract_table_markdown=table["text"],
@@ -1220,7 +1214,15 @@ def full_pipeline(
             if debug:
                 logger.info("   Extracting tables...")
             # For full_pipeline (merge_span_tables=True), always use AI analysis
-            tables = get_tables_from_pdf(d, pages, debug, debug_level, enrich, use_ai_analysis=True, credential_path=credential_path)
+            tables = get_tables_from_pdf(
+                d,
+                pages,
+                debug,
+                debug_level,
+                enrich,
+                use_ai_analysis=True,
+                credential_path=credential_path,
+            )
             if evaluate:
                 # bỏ đi table cuối cùng
                 tables = tables[:-1]
