@@ -300,7 +300,7 @@ class Enrich_VertexAI:
         | STT | 2023         | 2024         | Tổng điểm |
         |-----|--------------|--------------|-----------|
         | 1   | Nguyễn Văn A | Trần Thị B   | 16        |
-        | 2   | Lê Văn C                   | 15        |
+        | 2   | Lê Văn C                    | 15        |
         Output (Expected Markdown):
         | STT | 2023         | 2024         | Tổng điểm |
         |-----|--------------|--------------|-----------|
