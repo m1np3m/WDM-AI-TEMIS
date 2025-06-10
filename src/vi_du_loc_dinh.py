@@ -27,7 +27,7 @@ def test_extraction():
     has_credentials = test_credentials()
     
     parser = WDMPDFParser(
-        file_path="C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs/b014b8ca3c8ee543b655c29747cc6090.pdf",
+        file_path="C:/Users/Admin/Data/WDM-AI-TEMIS/data/experiment_data/b014b8ca3c8ee543b655c29747cc6090.pdf",
         debug=True,
         debug_level=1,
     )
@@ -35,6 +35,11 @@ def test_extraction():
     print(f"\nTesting with credentials: {has_credentials}")
     print("Extracting tables with merge_span_tables=True, enrich=True...")
     
-    tables = parser.extract_tables(merge_span_tables=True, enrich=True, pages=[2, 3])
+    tables = parser.extract_tables(merge_span_tables=True, enrich=True, pages=None)
     for table in tables:
         print(table['text'])
+if __name__ == "__main__":
+    test_extraction()
+    print("\n" + "="*60)
+    print("TESTING COMPLETED")
+    print("="*60)
