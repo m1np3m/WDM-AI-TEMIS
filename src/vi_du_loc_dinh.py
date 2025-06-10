@@ -17,6 +17,6 @@ if __name__ == "__main__":
     )
     
     
-    tables = parser.extract_tables(merge_span_tables=True, enrich=True, pages=None)
+    tables = parser.extract_tables(merge_span_tables=True, enrich=True, pages=[2, 3])
     for table in tables:
         print(table['text'])

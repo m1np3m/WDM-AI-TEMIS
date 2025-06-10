@@ -296,11 +296,23 @@ class Enrich_VertexAI:
         | 2   | Trần Thị B   | Toán         | 8.5  |
         |     | Trần Thị B   | Lý           | 6.5  |
         If the table merged columns, it will look like this:
-        | STT | 2021       | 2022      | Điểm |
-        |-----|--------------|--------------|------|
-        | 1   | Nguyễn Văn A | Nguyễn Văn A | 8    |
+        Input table:
+        | STT | 2023         | 2024         | Tổng điểm |
+        |-----|--------------|--------------|-----------|
+        | 1   | Nguyễn Văn A | Trần Thị B   | 16        |
+        | 2   | Lê Văn C                   | 15        |
+        Output (Expected Markdown):
+        | STT | 2023         | 2024         | Tổng điểm |
+        |-----|--------------|--------------|-----------|
+        | 1   | Nguyễn Văn A | Trần Thị B   | 16        |
+        | 2   | Lê Văn C     | Lê Văn C     | 15        |
         ### Your task:
         Please, based on these three inputs, reconstruct a **well-formatted Markdown table** with accurate column headers, rows, alignment, and structure. Return only the fixed and properly structured Markdown table without spaces or line breaks.
+        Reconstruct a well-formatted Markdown table that reflects the original visual layout and full data of the source table, including all values in merged rows and columns.
+        Do not change the number of rows or columns .
+        Fill in empty cells caused by merging with the correct duplicated or inferred values.
+        Maintain Markdown syntax and alignment .
+        Return only the final clean Markdown table , no extra text.
         """
 
         prompt = [
