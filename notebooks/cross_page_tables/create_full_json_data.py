@@ -1,19 +1,21 @@
 import json
 import sys
 
-sys.path.append("C:/Users/PC/CODE/WDM-AI-TEMIS")
+sys.path.append("/home/thangquang/code/WDM-AI-TEMIS")
 
 import os
 from typing import TypedDict, List
 from src.WDMParser import WDMPDFParser, WDMMergedTable, WDMTable, WDMText, WDMImage
 
+pdf_path = "/home/thangquang/code/WDM-AI-TEMIS/data/pdfs"
+
 pdf_sources = [
-    os.path.join("C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs", file)
-    for file in os.listdir("C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs")
+    os.path.join(pdf_path, file)
+    for file in os.listdir(pdf_path)
     if file.endswith(".pdf")
 ]
 
-pdf_file_names = [file for file in os.listdir("C:/Users/PC/CODE/WDM-AI-TEMIS/data/pdfs") if file.endswith(".pdf")]
+pdf_file_names = [file for file in os.listdir(pdf_path) if file.endswith(".pdf")]
 
 
 class JsonInstance(TypedDict):
@@ -29,6 +31,7 @@ def main():
             file_path=pdf_source,
             debug=True,
             debug_level=1,
+            credential_path="/home/thangquang/code/WDM-AI-TEMIS/key_vertex.json"
         )
         texts = parser.extract_text()
         tables = parser.extract_tables(merge_span_tables=True, enrich=True)
@@ -41,7 +44,7 @@ def main():
             images=images,
         ))
         # break
-    with open("C:/Users/PC/CODE/WDM-AI-TEMIS/notebooks/cross_page_tables/json_data.json", "w", encoding="utf-8") as f:
+    with open("/home/thangquang/code/WDM-AI-TEMIS/data/full_content.json", "w", encoding="utf-8") as f:
         json.dump(full_json_data, f, indent=4)
 
 

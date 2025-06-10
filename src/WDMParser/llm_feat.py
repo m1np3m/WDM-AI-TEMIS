@@ -1,11 +1,11 @@
 import json
 import os
+import re
 from typing import List
 
 from google.oauth2 import service_account
 
 from langchain_google_vertexai import ChatVertexAI
-from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
 from langchain_core.prompts import PromptTemplate
 
@@ -26,6 +26,55 @@ class IsHasHeader(BaseModel):
     is_has_header: List[bool] = Field(
         description="List of boolean values indicating whether the table has a header"
     )
+
+
+def clean_json_response(response: str) -> str:
+    """
+    Clean JSON response by removing markdown code blocks and extra whitespace.
+    
+    Args:
+        response: Raw response string that may contain markdown formatting
+        
+    Returns:
+        Cleaned JSON string
+    """
+    # Remove markdown code block markers
+    response = re.sub(r'```json\s*', '', response)
+    response = re.sub(r'```\s*$', '', response)
+    
+    # Convert Python-style booleans to JSON-style booleans
+    response = re.sub(r'\bTrue\b', 'true', response)
+    response = re.sub(r'\bFalse\b', 'false', response)
+    
+    # Remove any leading/trailing whitespace
+    response = response.strip()
+    
+    return response
+
+
+def parse_json_response(response_text: str, model_class):
+    """
+    Parse JSON response with fallback for markdown-wrapped JSON.
+    
+    Args:
+        response_text: Raw response from LLM
+        model_class: Pydantic model class to parse into
+        
+    Returns:
+        Parsed model instance
+    """
+    # First try to parse as-is
+    try:
+        json_data = json.loads(response_text)
+        return model_class(**json_data)
+    except json.JSONDecodeError:
+        # Try cleaning markdown formatting
+        cleaned_text = clean_json_response(response_text)
+        try:
+            json_data = json.loads(cleaned_text)
+            return model_class(**json_data)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Failed to parse JSON: {e}\nOriginal text: {response_text}\nCleaned text: {cleaned_text}")
 
 
 def _get_credentials():
@@ -73,8 +122,6 @@ def get_is_new_section_context(contexts: List[str], return_prompt: bool = False)
         credentials=credentials,
     )
 
-    output_parser = PydanticOutputParser(pydantic_object=IsNewSectionContext)
-
     template = """You are an expert in document structure analysis. Your task is to examine text segments that appear 
 immediately before tables or sections, and determine if they clearly indicate the start of a new section, 
 item, or table.
@@ -102,18 +149,20 @@ Requirements:
 - Always return False for [EMPTY] contexts
 - Return the result as a list of boolean values in the same order as the input contexts
 - The output list must have exactly the same length as the input list
+- Return ONLY a JSON object in this exact format: {{"is_new_section_context": [true, false, ...]}}
+- Do NOT wrap the JSON in markdown code blocks or any other formatting
+
 ### List of Contexts Before Tables:
 
 {contexts_text}
 
-### Total number of contexts: {len_contexts}\n{format_instruction}"""
+### Total number of contexts: {len_contexts}
+
+Return ONLY the JSON response without any additional text or formatting."""
 
     prompt_template = PromptTemplate(
         template=template,
         input_variables=["contexts_text", "len_contexts"],
-        partial_variables={
-            "format_instruction": output_parser.get_format_instructions()
-        },
     )
 
     # Format contexts with clear indexing
@@ -123,20 +172,25 @@ Requirements:
     ]
     contexts_text = "\n\n".join(formatted_contexts)
 
-    chain = prompt_template | llm | output_parser
-    res = chain.invoke(
+    # Create the chain and invoke
+    chain = prompt_template | llm
+    response = chain.invoke(
         input={
             "contexts_text": contexts_text,
             "len_contexts": len(contexts),
         }
     )
+    
+    # Parse the response
+    result = parse_json_response(response.content, IsNewSectionContext)
+    
     if return_prompt:
-        return res.is_new_section_context, prompt_template.format(
+        return result.is_new_section_context, prompt_template.format(
             contexts_text=contexts_text,
             len_contexts=len(contexts),
         )
 
-    return res.is_new_section_context
+    return result.is_new_section_context
 
 
 @retry_network_call
@@ -152,8 +206,6 @@ def get_is_has_header(
         max_tokens=8192,
         credentials=credentials,
     )
-
-    output_parser = PydanticOutputParser(pydantic_object=IsHasHeader)
 
     template = """You are an expert in analyzing table data structures. Your task is to examine tables and determine if their first row contains meaningful column headers.
 
@@ -194,19 +246,20 @@ A meaningful header row contains column names that describe the type of data tha
 - Return exactly one boolean per table in the same order as input
 - The output list must have exactly the same length as the input list
 - Be conservative: when in doubt, prefer False unless clearly header-like content
+- Return ONLY a JSON object in this exact format: {{"is_has_header": [true, false, ...]}}
+- Do NOT wrap the JSON in markdown code blocks or any other formatting
+
 ### Tables Analysis:
 
 {tables_text}
 
 ### Total number of tables: {len_rows}
-{format_instruction}"""
+
+Return ONLY the JSON response without any additional text or formatting."""
 
     prompt_template = PromptTemplate(
         template=template,
         input_variables=["tables_text", "len_rows"],
-        partial_variables={
-            "format_instruction": output_parser.get_format_instructions()
-        },
     )
 
     # Format table information with both headers and context
@@ -234,12 +287,16 @@ Table Preview (First 3 rows):
 
     tables_text = "\n\n".join(formatted_tables)
 
-    chain = prompt_template | llm | output_parser
-    res = chain.invoke(input={"tables_text": tables_text, "len_rows": len(rows)})
+    # Create the chain and invoke
+    chain = prompt_template | llm
+    response = chain.invoke(input={"tables_text": tables_text, "len_rows": len(rows)})
+    
+    # Parse the response
+    result = parse_json_response(response.content, IsHasHeader)
 
     if return_prompt:
-        return res.is_has_header, prompt_template.format(
+        return result.is_has_header, prompt_template.format(
             tables_text=tables_text, len_rows=len(rows)
         )
 
-    return res.is_has_header
+    return result.is_has_header
