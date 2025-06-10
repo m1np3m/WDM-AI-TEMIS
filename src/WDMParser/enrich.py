@@ -245,6 +245,7 @@ class Enrich_VertexAI:
         3. Highlight any special formatting, such as merged cells, bold/italicized text, or color coding.
         4. Describe whether the table is horizontal, vertical, or matrix-like.
         5. Mention any missing values, inconsistencies, or notes.
+        6. Are ther any merge collumns or rows in the table, describe it carefully?
         Your response should be detailed and help reconstruct the table's structure later.
         """
 
@@ -276,8 +277,30 @@ class Enrich_VertexAI:
         2. **Table Summary**:
         {summary_content}
         3. **Table Image**: (see below)
+        ### Note:
+        Note that, when the table has merged rows, the Markdown format will not show the duplicate rows or columns for the merged cells. Instead, it will show the first row or column with the content, and the subsequent rows or columns will be left empty.
+        Look from pdf it look like this:
+        | STT | Họ tên       | Môn học      | Điểm |
+        |-----|--------------|--------------|------|
+        | 1   | Nguyễn Văn A | Toán         | 8    |
+        |     |              | Lý           | 7    |
+        |     |              | Hóa          | 9    |
+        | 2   | Trần Thị B   | Toán         | 8.5  |
+        |     |              | Lý           | 6.5  |
+        But If table merged!Output rows when you returns need to look like this, we need all meaning from the table:
+        | STT | Họ tên       | Môn học      | Điểm |
+        |-----|--------------|--------------|------|
+        | 1   | Nguyễn Văn A | Toán         | 8    |
+        |     | Nguyễn Văn A | Lý           | 7    |
+        |     | Nguyễn Văn A | Hóa          | 9    |
+        | 2   | Trần Thị B   | Toán         | 8.5  |
+        |     | Trần Thị B   | Lý           | 6.5  |
+        If the table merged columns, it will look like this:
+        | STT | 2021       | 2022      | Điểm |
+        |-----|--------------|--------------|------|
+        | 1   | Nguyễn Văn A | Nguyễn Văn A | 8    |
         ### Your task:
-        Based on these three inputs, reconstruct a **well-formatted Markdown table** with accurate column headers, rows, alignment, and structure. Return only the fixed and properly structured Markdown table without spaces or line breaks.
+        Please, based on these three inputs, reconstruct a **well-formatted Markdown table** with accurate column headers, rows, alignment, and structure. Return only the fixed and properly structured Markdown table without spaces or line breaks.
         """
 
         prompt = [
