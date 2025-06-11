@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from google.oauth2 import service_account
-from merge_table_prompt import MERGE_TABLE_PROMPT
+from prompts import MERGE_TABLE_PROMPT
 
 
 # Add the project root directory to Python path

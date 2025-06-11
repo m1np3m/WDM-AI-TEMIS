@@ -1,0 +1,576 @@
+{
+  "overall_metrics": {
+    "total_files": 31,
+    "completed_files": 31,
+    "total_successful_matches": 112,
+    "overall_average_score": 0.8091392774278642,
+    "total_score": 90.6235990719208,
+    "all_scores": [
+      0.85,
+      1.0,
+      0.95,
+      0.3520939180190401,
+      0.92,
+      0.85,
+      0.85,
+      0.85,
+      0.48282959592676855,
+      0.85,
+      1.0,
+      1.0,
+      0.34581280788177343,
+      0.85,
+      0.85,
+      0.95,
+      1.0,
+      1.0,
+      0.85,
+      0.75,
+      1.0,
+      0.40806864349682903,
+      0.95,
+      0.82,
+      0.98,
+      0.4163216756206327,
+      0.85,
+      0.85,
+      0.85,
+      1.0,
+      0.464747597545444,
+      0.88,
+      1.0,
+      0.85,
+      0.39037745421823994,
+      0.95,
+      0.65,
+      0.92,
+      0.18310655743657903,
+      0.75,
+      0.95,
+      0.75,
+      0.65,
+      0.95,
+      1.0,
+      0.75,
+      1.0,
+      0.82,
+      0.4266002319269048,
+      0.85,
+      0.92,
+      1.0,
+      0.3256867692249617,
+      0.85,
+      1.0,
+      0.78,
+      0.24571036376115304,
+      0.85,
+      0.92,
+      0.85,
+      0.85,
+      0.4148675662168915,
+      0.85,
+      0.95,
+      0.98,
+      0.85,
+      0.3781954887218045,
+      1.0,
+      1.0,
+      0.85,
+      0.95,
+      0.33864436762581757,
+      0.85,
+      0.85,
+      1.0,
+      0.75,
+      0.85,
+      0.85,
+      0.95,
+      0.98,
+      0.27349304124308177,
+      0.95,
+      0.98,
+      0.88,
+      0.95,
+      0.92,
+      0.4276167477606327,
+      0.98,
+      0.98,
+      1.0,
+      0.4398940364900353,
+      0.95,
+      0.95,
+      0.85,
+      1.0,
+      0.88,
+      0.95,
+      0.85,
+      0.98,
+      0.78,
+      0.85,
+      0.85,
+      1.0,
+      0.5397489539748954,
+      1.0,
+      0.75,
+      0.5117370892018779,
+      1.0,
+      1.0,
+      0.4580461656273931,
+      0.65,
+      0.95
+    ]
+  },
+  "file_results": {
+    "000ebcad8623837eb1384098a8c31d40.md": {
+      "ground_truth_count": 1,
+      "wdm_tables_count": 1,
+      "matched_tables": 1,
+      "total_score": 0.85,
+      "average_score": 0.85,
+      "match_rate": 100.0,
+      "scores": [
+        0.85
+      ],
+      "status": "completed"
+    },
+    "1b52e3a6ea67f7469adcd476b208c758.md": {
+      "ground_truth_count": 3,
+      "wdm_tables_count": 3,
+      "matched_tables": 3,
+      "total_score": 2.30209391801904,
+      "average_score": 0.76736463933968,
+      "match_rate": 100.0,
+      "scores": [
+        1.0,
+        0.95,
+        0.3520939180190401
+      ],
+      "status": "completed"
+    },
+    "1c4314aa93e15f005d17ec44b89e741e.md": {
+      "ground_truth_count": 4,
+      "wdm_tables_count": 4,
+      "matched_tables": 4,
+      "total_score": 3.47,
+      "average_score": 0.8675,
+      "match_rate": 100.0,
+      "scores": [
+        0.92,
+        0.85,
+        0.85,
+        0.85
+      ],
+      "status": "completed"
+    },
+    "0e2f038a5e75936fd51c88a130cff713.md": {
+      "ground_truth_count": 6,
+      "wdm_tables_count": 6,
+      "matched_tables": 6,
+      "total_score": 4.528642403808542,
+      "average_score": 0.7547737339680903,
+      "match_rate": 100.0,
+      "scores": [
+        0.48282959592676855,
+        0.85,
+        1.0,
+        1.0,
+        0.34581280788177343,
+        0.85
+      ],
+      "status": "completed"
+    },
+    "0af43d695e0fa436b1c1dfc150d48182.md": {
+      "ground_truth_count": 3,
+      "wdm_tables_count": 2,
+      "matched_tables": 1,
+      "total_score": 0.85,
+      "average_score": 0.85,
+      "match_rate": 50.0,
+      "scores": [
+        0.85
+      ],
+      "status": "completed"
+    },
+    "04c91a925c6ba44f47ef5eeeb40181c7.md": {
+      "ground_truth_count": 5,
+      "wdm_tables_count": 4,
+      "matched_tables": 4,
+      "total_score": 3.8000000000000003,
+      "average_score": 0.9500000000000001,
+      "match_rate": 100.0,
+      "scores": [
+        0.95,
+        1.0,
+        1.0,
+        0.85
+      ],
+      "status": "completed"
+    },
+    "0d87239dc5bc9ac6257e5b9f31fe8c47.md": {
+      "ground_truth_count": 2,
+      "wdm_tables_count": 1,
+      "matched_tables": 1,
+      "total_score": 0.75,
+      "average_score": 0.75,
+      "match_rate": 100.0,
+      "scores": [
+        0.75
+      ],
+      "status": "completed"
+    },
+    "0c1eb8c410a4353522173d27bbdbef86.md": {
+      "ground_truth_count": 10,
+      "wdm_tables_count": 10,
+      "matched_tables": 10,
+      "total_score": 8.124390319117461,
+      "average_score": 0.8124390319117462,
+      "match_rate": 100.0,
+      "scores": [
+        1.0,
+        0.40806864349682903,
+        0.95,
+        0.82,
+        0.98,
+        0.4163216756206327,
+        0.85,
+        0.85,
+        0.85,
+        1.0
+      ],
+      "status": "completed"
+    },
+    "02f392c3f69a32ebba8aa2754efa81dd.md": {
+      "ground_truth_count": 5,
+      "wdm_tables_count": 5,
+      "matched_tables": 4,
+      "total_score": 3.1947475975454442,
+      "average_score": 0.7986868993863611,
+      "match_rate": 80.0,
+      "scores": [
+        0.464747597545444,
+        0.88,
+        1.0,
+        0.85
+      ],
+      "status": "completed"
+    },
+    "0f2e91196bed7af39daccd67edea21c3.md": {
+      "ground_truth_count": 6,
+      "wdm_tables_count": 4,
+      "matched_tables": 4,
+      "total_score": 2.91037745421824,
+      "average_score": 0.72759436355456,
+      "match_rate": 100.0,
+      "scores": [
+        0.39037745421823994,
+        0.95,
+        0.65,
+        0.92
+      ],
+      "status": "completed"
+    },
+    "0aed309e29e45111f67fb85aea1fcb5e.md": {
+      "ground_truth_count": 3,
+      "wdm_tables_count": 1,
+      "matched_tables": 1,
+      "total_score": 0.18310655743657903,
+      "average_score": 0.18310655743657903,
+      "match_rate": 100.0,
+      "scores": [
+        0.18310655743657903
+      ],
+      "status": "completed"
+    },
+    "0b9d98b6c191a68687b78f885032034d.md": {
+      "ground_truth_count": 1,
+      "wdm_tables_count": 1,
+      "matched_tables": 0,
+      "total_score": 0,
+      "average_score": 0,
+      "match_rate": 0.0,
+      "scores": [],
+      "status": "completed"
+    },
+    "0e0a2909223d73904fcc4dee7fd89629.md": {
+      "ground_truth_count": 4,
+      "wdm_tables_count": 3,
+      "matched_tables": 3,
+      "total_score": 2.45,
+      "average_score": 0.8166666666666668,
+      "match_rate": 100.0,
+      "scores": [
+        0.75,
+        0.95,
+        0.75
+      ],
+      "status": "completed"
+    },
+    "1a156c8eba7a1553957ff34eb0e15059.md": {
+      "ground_truth_count": 2,
+      "wdm_tables_count": 2,
+      "matched_tables": 1,
+      "total_score": 0.65,
+      "average_score": 0.65,
+      "match_rate": 50.0,
+      "scores": [
+        0.65
+      ],
+      "status": "completed"
+    },
+    "0a0e3845438489987596c8ed31e4e021.md": {
+      "ground_truth_count": 2,
+      "wdm_tables_count": 2,
+      "matched_tables": 2,
+      "total_score": 1.95,
+      "average_score": 0.975,
+      "match_rate": 100.0,
+      "scores": [
+        0.95,
+        1.0
+      ],
+      "status": "completed"
+    },
+    "0d8e2c3e9163a9621c75d32372ea6cf4.md": {
+      "ground_truth_count": 3,
+      "wdm_tables_count": 3,
+      "matched_tables": 3,
+      "total_score": 2.57,
+      "average_score": 0.8566666666666666,
+      "match_rate": 100.0,
+      "scores": [
+        0.75,
+        1.0,
+        0.82
+      ],
+      "status": "completed"
+    },
+    "0ca257d40c4254dc2011d7b1a0b47ee3.md": {
+      "ground_truth_count": 3,
+      "wdm_tables_count": 3,
+      "matched_tables": 3,
+      "total_score": 2.196600231926905,
+      "average_score": 0.7322000773089683,
+      "match_rate": 100.0,
+      "scores": [
+        0.4266002319269048,
+        0.85,
+        0.92
+      ],
+      "status": "completed"
+    },
+    "0bdb785c3f66950f97d8bcba52d33c59.md": {
+      "ground_truth_count": 1,
+      "wdm_tables_count": 1,
+      "matched_tables": 1,
+      "total_score": 1.0,
+      "average_score": 1.0,
+      "match_rate": 100.0,
+      "scores": [
+        1.0
+      ],
+      "status": "completed"
+    },
+    "0c2e041adb51be82e5d52f2d1adbaaa4.md": {
+      "ground_truth_count": 1,
+      "wdm_tables_count": 1,
+      "matched_tables": 1,
+      "total_score": 0.3256867692249617,
+      "average_score": 0.3256867692249617,
+      "match_rate": 100.0,
+      "scores": [
+        0.3256867692249617
+      ],
+      "status": "completed"
+    },
+    "1ac028d758122e953fc89037e9a0d938.md": {
+      "ground_truth_count": 31,
+      "wdm_tables_count": 28,
+      "matched_tables": 16,
+      "total_score": 12.768773418699848,
+      "average_score": 0.7980483386687405,
+      "match_rate": 57.14285714285714,
+      "scores": [
+        0.85,
+        1.0,
+        0.78,
+        0.24571036376115304,
+        0.85,
+        0.92,
+        0.85,
+        0.85,
+        0.4148675662168915,
+        0.85,
+        0.95,
+        0.98,
+        0.85,
+        0.3781954887218045,
+        1.0,
+        1.0
+      ],
+      "status": "completed"
+    },
+    "0f7719c1d476e5943bb41123ea4c62b1.md": {
+      "ground_truth_count": 2,
+      "wdm_tables_count": 2,
+      "matched_tables": 2,
+      "total_score": 1.7999999999999998,
+      "average_score": 0.8999999999999999,
+      "match_rate": 100.0,
+      "scores": [
+        0.85,
+        0.95
+      ],
+      "status": "completed"
+    },
+    "0d53c9bb542770f272dba9d6c673e47c.md": {
+      "ground_truth_count": 4,
+      "wdm_tables_count": 3,
+      "matched_tables": 2,
+      "total_score": 1.1886443676258176,
+      "average_score": 0.5943221838129088,
+      "match_rate": 66.66666666666666,
+      "scores": [
+        0.33864436762581757,
+        0.85
+      ],
+      "status": "completed"
+    },
+    "1ec40c81f8fec1c39ad5670b3fa1ec4f.md": {
+      "ground_truth_count": 3,
+      "wdm_tables_count": 1,
+      "matched_tables": 1,
+      "total_score": 0.85,
+      "average_score": 0.85,
+      "match_rate": 100.0,
+      "scores": [
+        0.85
+      ],
+      "status": "completed"
+    },
+    "0c8017197207ba19842c6d2a08af69be.md": {
+      "ground_truth_count": 4,
+      "wdm_tables_count": 2,
+      "matched_tables": 0,
+      "total_score": 0,
+      "average_score": 0,
+      "match_rate": 0.0,
+      "scores": [],
+      "status": "completed"
+    },
+    "0e0acbbfdad6cfc6c7a8ae4427a12389.md": {
+      "ground_truth_count": 7,
+      "wdm_tables_count": 3,
+      "matched_tables": 1,
+      "total_score": 1.0,
+      "average_score": 1.0,
+      "match_rate": 33.33333333333333,
+      "scores": [
+        1.0
+      ],
+      "status": "completed"
+    },
+    "1df9b50a99e9fe5ee8dbb3b9d7375d21.md": {
+      "ground_truth_count": 13,
+      "wdm_tables_count": 13,
+      "matched_tables": 8,
+      "total_score": 6.5834930412430825,
+      "average_score": 0.8229366301553853,
+      "match_rate": 61.53846153846154,
+      "scores": [
+        0.75,
+        0.85,
+        0.85,
+        0.95,
+        0.98,
+        0.27349304124308177,
+        0.95,
+        0.98
+      ],
+      "status": "completed"
+    },
+    "05e4a8e6c3176de0829bb6206ba53a88.md": {
+      "ground_truth_count": 4,
+      "wdm_tables_count": 2,
+      "matched_tables": 1,
+      "total_score": 0.88,
+      "average_score": 0.88,
+      "match_rate": 50.0,
+      "scores": [
+        0.88
+      ],
+      "status": "completed"
+    },
+    "0a645415698b0a0fd9bac7cd0c6b888c.md": {
+      "ground_truth_count": 22,
+      "wdm_tables_count": 18,
+      "matched_tables": 14,
+      "total_score": 12.127510784250669,
+      "average_score": 0.8662507703036192,
+      "match_rate": 77.77777777777779,
+      "scores": [
+        0.95,
+        0.92,
+        0.4276167477606327,
+        0.98,
+        0.98,
+        1.0,
+        0.4398940364900353,
+        0.95,
+        0.95,
+        0.85,
+        1.0,
+        0.88,
+        0.95,
+        0.85
+      ],
+      "status": "completed"
+    },
+    "0aba94ce585bab43b8a798af3a9cb901.md": {
+      "ground_truth_count": 3,
+      "wdm_tables_count": 2,
+      "matched_tables": 1,
+      "total_score": 0.98,
+      "average_score": 0.98,
+      "match_rate": 50.0,
+      "scores": [
+        0.98
+      ],
+      "status": "completed"
+    },
+    "0c1cec5ca5a6fb780a9cfa24d99132b1.md": {
+      "ground_truth_count": 18,
+      "wdm_tables_count": 13,
+      "matched_tables": 10,
+      "total_score": 8.281486043176773,
+      "average_score": 0.8281486043176773,
+      "match_rate": 76.92307692307693,
+      "scores": [
+        0.78,
+        0.85,
+        0.85,
+        1.0,
+        0.5397489539748954,
+        1.0,
+        0.75,
+        0.5117370892018779,
+        1.0,
+        1.0
+      ],
+      "status": "completed"
+    },
+    "0dcef8612118d0b41e55d3786f1fa59c.md": {
+      "ground_truth_count": 3,
+      "wdm_tables_count": 3,
+      "matched_tables": 3,
+      "total_score": 2.0580461656273927,
+      "average_score": 0.6860153885424642,
+      "match_rate": 100.0,
+      "scores": [
+        0.4580461656273931,
+        0.65,
+        0.95
+      ],
+      "status": "completed"
+    }
+  }
+}
