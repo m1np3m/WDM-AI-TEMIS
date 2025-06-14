@@ -10,32 +10,40 @@ from ragas.metrics import (
     context_recall,
     BleuScore,
     RougeScore,
-
 )
 import requests
 import json
 import matplotlib.pyplot as plt
+from ragas.evaluation import evaluate, RunConfig
+from ragas.metrics import (
+    NonLLMContextRecall,
+    NonLLMContextPrecisionWithReference,
+)
 from .rag_metrics import *
 
 def run_ragas_eval(
-    client,
     eval_df,
     collection_name,
     doc_retrieval_function,
-    generate_model_output,
     embedding_model_name,
+    response_generation_function = "",
     num_docs=5,
     path="ragas_eval.csv"
 ):
-    eval_df = eval_df.rename(columns={"question": "input", "answer": "ground_truth"})
+    eval_df = eval_df.rename(columns={"question": "input", "answer": "ground_truth", "context": "reference_contexts"})
+    print("Running Context Retrieve...")
 
     eval_df['contexts'] = eval_df['input'].apply(
-        lambda q: doc_retrieval_function(client, collection_name, q, embedding_model_name, num_documents=num_docs)
+        lambda q: doc_retrieval_function(collection_name, q, embedding_model_name, num_documents=num_docs)
     )
+    eval_df["reference_contexts"] = eval_df["reference_contexts"].apply(lambda x: [x] if isinstance(x, str) else x)
+
+
+    print("Running Oputput Generate...")
 
     if 'output' not in eval_df.columns:
         eval_df['output'] = eval_df.apply(
-            lambda row: generate_model_output(row['input'], row['contexts']),
+            lambda row: response_generation_function, #generate_model_output(row['input'], row['contexts'])
             axis=1
         )
 
@@ -43,31 +51,36 @@ def run_ragas_eval(
         "input": "user_input",     
         "output": "response",        
         "ground_truth": "ground_truth",  
-        "contexts": "contexts"
+        "contexts": "retrieved_contexts"
     })
-    dataset = Dataset.from_pandas(eval_df[["user_input", "response", "ground_truth", "contexts"]])
+    dataset = Dataset.from_pandas(eval_df[["user_input", "response", "ground_truth", "retrieved_contexts", "reference_contexts"]])
+    context_precision =NonLLMContextPrecisionWithReference()
+    context_recall = NonLLMContextRecall()
+
+
 
     print("Running RAGAS evaluation...")
+    run_config = RunConfig(timeout=120, max_workers=63)
 
     results = evaluate(
         dataset,
         metrics=[
-            faithfulness,
-            answer_relevancy,
-            answer_similarity,
             context_precision,
-            context_recall,
+            context_recall
         ]
     )
 
     df_results = results.to_pandas()
-    df_results['hit_rate'] = calculate_hit_rate(eval_df)
-    df_results['mrr'] = calculate_mrr(eval_df)
+    df_results['hit_rate'] = calculate_semantic_hit_rate(eval_df, top_k=num_docs)
+    df_results['mrr'] = calculate_semantic_mrr(eval_df)
+    df_results = df_results.rename(columns={
+        "non_llm_context_precision_with_reference": "context_precision",     
+        "non_llm_context_recall": "context_recall"
+    })
     df_results.to_csv(path, index=False)
 
     print("Evaluation completed. Results saved to", path)
     return df_results
-
 
 
 def plot_experiment_comparison(experiment_results_list, experiment_names, metrics_to_plot):
@@ -98,7 +111,7 @@ def plot_experiment_comparison(experiment_results_list, experiment_names, metric
     if has_special_metric and not is_all_standard:
         title = "Comparison of Retrieval & RAG Metrics"
         ylabel = "Score / Value"
-        ylim = None  # Không giới hạn nếu có metric mở rộng
+        ylim = None  
     else:
         title = "Comparison of RAGAS Evaluation Metrics"
         ylabel = "Average Score"

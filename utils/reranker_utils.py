@@ -1,351 +1,163 @@
-from mixedbread_ai.client import MixedbreadAI
-import cohere
-import time
+# reranker.py
+
 import os
+import time
 import requests
-from langchain_community.vectorstores import Qdrant
-from langchain_core.documents import Document
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
-from qdrant_client import QdrantClient
-from fastembed.sparse.sparse_text_embedding import SparseTextEmbedding, SparseEmbedding
-import numpy as np
-from typing import List, Tuple, Union
-from FlagEmbedding import FlagAutoReranker
+
+from typing import Callable, List, Optional
+
+# === Jina ===
+JINA_MODEL = "jina-colbert-v1-en"
+JINA_URL = "https://api.jina.ai/v1/rerank"
+
+# === Mixedbread ===
+from mixedbread import Mixedbread
+mxbai = Mixedbread(api_key=os.getenv("MXBAI_API_KEY"))
+
+# === Cohere ===
+import cohere
+co = cohere.Client(os.getenv("COHERE_API_KEY"))
+
+# === BCE ===
 from BCEmbedding import RerankerModel
-from flashrank import Ranker, RerankRequest
-from sentence_transformers import CrossEncoder
-import pickle
-from dotenv import load_dotenv, find_dotenv
-load_dotenv(find_dotenv())
+bce_model = RerankerModel("maidalun1020/bce-reranker-base_v1", use_fp16=True, device="cuda")
 
-sparse_model_name = "prithivida/Splade_PP_en_v1"
-embedding_model_name = "BAAI/bge-small-en"
-
-sparse_model = SparseTextEmbedding(model_name=sparse_model_name, batch_size=32)
-
-embedding_model = FastEmbedEmbeddings(model_name=embedding_model_name)
-cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-reranker_bce = RerankerModel(model_name_or_path="maidalun1020/bce-reranker-base_v1", use_fp16=False)
-flashrank_ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2", max_length=512)
-
-
-RERANK_URL = f"https://api.jina.ai/v1/rerank"
-RERANK_MODEL = "jina-colbert-v1-en"
-
-
-COHERE_KEY=os.getenv("COHERE_KEY")
-co = cohere.Client(COHERE_KEY)
-
-
-colbert_reranker = FlagAutoReranker.from_finetuned(
+# === FlagEmbedding ColBERT ===
+from FlagEmbedding import FlagAutoReranker
+colbert_model = FlagAutoReranker.from_finetuned(
     model_name_or_path="BAAI/bge-reranker-v2-minicpm-layerwise",
     max_length=512,
-    devices=['cuda:1'] 
+    devices='cuda'
 )
 
-MXBAI_KEY=os.getenv("MXBAI_API_KEY")
-mxbai = MixedbreadAI(api_key=MXBAI_KEY)
+# === Flashrank ===
+from flashrank import Ranker, RerankRequest
+flashrank_model = Ranker(model_name="ms-marco-MiniLM-L-12-v2", max_length=512)
+
+# === Sentence Transformers ===
+from sentence_transformers import CrossEncoder
+st_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
 
+class Reranker:
+    def __init__(self, method: Optional[str] = None):
+        self.method = method
+        self.rerank_func = self.get_reranker_by_name(method)
 
-def get_reranked_documents_with_flashrank(client, collection_name, query, num_documents=5):
-    """
-    Rerank tài liệu sử dụng Flashrank.
-    """
-    search_results = client.query(
-        collection_name=collection_name,
-        query_text=query,
-        limit=num_documents + 4,
+    def rerank(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
+        if not self.rerank_func:
+            return documents[:top_k]
+        return self.rerank_func(query, documents, top_k)
+
+    def get_reranker_by_name(self, name: Optional[str]) -> Optional[Callable]:
+        if name is None:
+            return None
+        rerankers = {
+            "jina": self.jina_reranker,
+            "mixedbread": self.mixedbread_reranker,
+            "cohere": self.cohere_reranker,
+            "bce": self.bce_reranker,
+            "colbert": self.colbert_reranker,
+            "flashrank": self.flashrank_reranker,
+            "st-crossencoder": self.st_crossencoder_reranker,
+        }
+        return rerankers.get(name.lower())
+
+    # === Individual Reranker Functions ===
+    def jina_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {os.getenv('JINA_API_KEY')}",
+        }
+        data = {
+            "model": JINA_MODEL,
+            "query": query,
+            "documents": documents,
+            "top_n": top_k
+        }
+        try:
+            response = requests.post(JINA_URL, headers=headers, json=data)
+            response = response.json()
+            return [doc['document']['text'] for doc in response['results']]
+        except Exception as e:
+            print(f"[JINA Reranker] Error: {e}")
+            return documents[:top_k]
+
+    def mixedbread_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
+        try:
+            response = mxbai.rerank(
+                model="mixedbread-ai/mxbai-rerank-large-v1",
+                query=query,
+                input=documents,
+                top_k=top_k,
+                return_input=True
+            )
+            return [doc.input for doc in response.data]
+        except Exception as e:
+            print(f"[Mixedbread Reranker] Error: {e}")
+            return documents[:top_k]
+
+    def cohere_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
+        try:
+            response = co.rerank(
+                model="rerank-english-v3.0",
+                query=query,
+                documents=documents,
+                top_n=top_k,
+                return_documents=True
+            )
+            return [documents[doc.index] for doc in response.results]
+        except Exception as e:
+            print(f"[Cohere Reranker] Error: {e}")
+            return documents[:top_k]
+
+    def bce_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
+        try:
+            rerank_input = [(query, doc) for doc in documents]
+            scores = bce_model.compute_score(rerank_input)
+            ranked = sorted(zip(scores, documents), key=lambda x: x[0], reverse=True)
+            return [doc for score, doc in ranked[:top_k]]
+        except Exception as e:
+            print(f"[BCE Reranker] Error: {e}")
+            return documents[:top_k]
+
+    def colbert_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
+        try:
+            pairs = [[query, doc] for doc in documents]
+            scores = colbert_model.compute_score(pairs, normalize=True)
+            ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
+            return [doc for doc, _ in ranked[:top_k]]
+        except Exception as e:
+            print(f"[ColBERT Reranker] Error: {e}")
+            return documents[:top_k]
+
+    def flashrank_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
+        try:
+            passages = [{"text": doc} for doc in documents]
+            request = RerankRequest(query=query, passages=passages)
+            results = flashrank_model.rerank(request)
+            return [item["text"] for item in results[:top_k]]
+        except Exception as e:
+            print(f"[Flashrank Reranker] Error: {e}")
+            return documents[:top_k]
+
+    def st_crossencoder_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
+        try:
+            pairs = [[query, doc] for doc in documents]
+            scores = st_model.predict(pairs)
+            ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
+            return [doc for doc, _ in ranked[:top_k]]
+        except Exception as e:
+            print(f"[ST CrossEncoder Reranker] Error: {e}")
+            return documents[:top_k]
+
+if __name__ == 'main':
+    # from reranker import Reranker
+
+    reranker = Reranker(method="flashrank")
+
+    documents = reranker.rerank(
+        query="What is hybrid retrieval?",
+        documents=["doc1", "doc2", "doc3", "doc4", "doc5", "doc6"],
+        top_k=5
     )
-    results = [{"text": r.metadata["document"]} for r in search_results]
-
-    request = RerankRequest(query=query, passages=results, top_k=num_documents)
-    results = flashrank_ranker.rerank(request)
-
-    return [item["text"] for item in results]
-
-def get_reranked_documents_with_st_cross_encoder(client, collection_name, query, num_documents=5):
-    """
-    Rerank tài liệu sử dụng Sentence Transformers Cross Encoder.
-    """
-    search_results = client.query(
-        collection_name=collection_name,
-        query_text=query,
-        limit=num_documents + 4,
-    )
-    results = [r.metadata["document"] for r in search_results]
-
-    pairs = [[query, doc] for doc in results]
-    scores = cross_encoder.predict(pairs)
-    scored_docs = sorted(zip(scores, results), key=lambda x: x[0], reverse=True)
-    reranked = [doc for score, doc in scored_docs[:num_documents]]
-
-    return reranked
-
-def get_reranked_documents_with_bce(client, collection_name, query, num_documents=5):
-    """
-    Rerank tài liệu sử dụng BCE Embedding reranker.
-    """
-    search_results = client.query(
-        collection_name=collection_name,
-        query_text=query,
-        limit=num_documents + 4,
-    )
-    results = [r.metadata["document"] for r in search_results]
-
-    rerank_input = [(query, doc) for doc in results]
-    scores = reranker_bce.compute_score(rerank_input)
-
-    scored_docs = sorted(zip(scores, results), key=lambda x: x[0], reverse=True)
-    reranked = [doc for score, doc in scored_docs[:num_documents]]
-
-    return reranked
-
-def get_reranked_documents_with_colbert(client, collection_name, query, num_documents=5):
-    """
-    Rerank tài liệu sử dụng ColBERT reranker của FlagEmbedding.
-    """
-    search_results = client.query(
-        collection_name=collection_name,
-        query_text=query,
-        limit=num_documents + 4,
-    )
-    results = [r.metadata["document"] for r in search_results]
-
-    reranked = colbert_reranker.rank(query, results, k=num_documents)
-    return reranked
-
-def get_reranked_documents_with_cohere(client, collection_name, query, num_documents=5):
-    """
-    This function retrieves the desired number of documents from the Qdrant collection given a query.
-    It returns a list of the reranked retrieved documents.
-    """
-    
-    search_results = client.query(
-        collection_name=collection_name,
-        query_text=query,
-        limit=num_documents+4,
-    )
-    results = [r.metadata["document"] for r in search_results]
-    
-    response = co.rerank(
-    model="rerank-english-v3.0",
-    query=query,
-    documents=results,
-    top_n=num_documents,
-    return_documents=True
-    )
-
-    time.sleep(6.1)
-    
-    return [doc.document.text for doc in response.results]
-
-
-
-
-def get_reranked_documents_with_mixedbread(client, collection_name, query, num_documents=5):
-    """
-    This function retrieves the desired number of documents from the Qdrant collection given a query.
-    It returns a list of the reranked retrieved documents.
-    """
-    
-    search_results = client.query(
-        collection_name=collection_name,
-        query_text=query,
-        limit=num_documents+4,
-    )
-    results = [r.metadata["document"] for r in search_results]
-    
-    response = mxbai.reranking(
-    model="mixedbread-ai/mxbai-rerank-large-v1",
-    query=query,
-    input=results,
-    top_k=num_documents,
-    return_input=True
-    )
-
-    time.sleep(1)
-    
-    return [doc.input for doc in response.data]
-
-
-
-def get_reranked_documents_with_jina(client, collection_name, query, num_documents=5):
-    """
-    This function retrieves the desired number of documents from the Qdrant collection given a query.
-    It returns a list of the reranked retrieved documents.
-    """
-    
-    search_results = client.query(
-        collection_name=collection_name,
-        query_text=query,
-        limit=num_documents+4,
-    )
-    results = [r.metadata["document"] for r in search_results]
-
-    headers = {
-    "Content-Type": "application/json",
-    "Authorization": f"Bearer {os.getenv('JINA_API_KEY')}",
-    }
-
-    data = {
-    "model": RERANK_MODEL,
-    "query": query,
-    "documents": results,
-    "top_n": num_documents
-    }
-
-    response = requests.post(RERANK_URL, headers=headers, json=data)
-    response = response.json()
-
-    time.sleep(1)
-    
-    return [doc['document']['text'] for doc in response['results']]
-
-
-
-
-
-def compute_sparse_vectors(texts: List[str]) -> Tuple[List[List[int]], List[List[float]]]:
-    """Tính toán sparse vector từ SPLADE model"""
-    indices_list, values_list = [], []
-    for text in texts:
-        embedding: SparseEmbedding = next(sparse_model.embed([text]))
-        indices_list.append(embedding.indices.tolist())
-        values_list.append(embedding.values.tolist())
-    return indices_list, values_list
-
-
-
-def add_hybrid_documents(
-    client: QdrantClient,
-    collection_name: str,
-    langchain_docs: List[Document],
-    chunk_size: int = 512,
-    chunk_overlap: int = 50,
-    embedding_model_name: str = "BAAI/bge-small-en",
-):
-    """
-    Chia nhỏ tài liệu, nhúng và thêm vào Qdrant với hỗ trợ hybrid search.
-    """
-
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        add_start_index=True,
-        separators=["\n\n", "\n", ".", " ", ""],
-    )
-
-    docs_processed = []
-    for doc in langchain_docs:
-        docs_processed += text_splitter.split_documents([doc])
-
-    texts = [doc.page_content for doc in docs_processed]
-    metadatas = [doc.metadata for doc in docs_processed]
-
-    sparse_indices, sparse_values = compute_sparse_vectors(texts)
-
-    for i, meta in enumerate(metadatas):
-        meta["sparse_indices"] = sparse_indices[i]
-        meta["sparse_values"] = sparse_values[i]
-
-    vectorstore = Qdrant.from_documents(
-        documents=docs_processed,
-        embedding=embedding_model,
-        collection_name=collection_name,
-        url="http://localhost:6333",
-        force_recreate=True,
-        prefer_grpc=False,
-        hnsw_config={"ef_construct": 128, "m": 16},
-        optimizers_config={"indexing_threshold": 10000},
-        on_disk_payload=True,
-    )
-    print(f"✅ Đã thêm {len(docs_processed)} đoạn văn bản vào collection '{collection_name}'")
-
-
-def get_hybrid_documents(
-    client: QdrantClient,
-    collection_name: str,
-    query: str,
-    hybrid_factor: float = 0.4,
-    num_documents: int = 5,
-) -> List[str]:
-    """
-    Truy vấn hybrid trên Qdrant dựa trên alpha factor.
-    """
-
-    vectorstore = Qdrant(
-        client=client,
-        collection_name=collection_name,
-        embeddings=embedding_model,
-    )
-
-    all_docs = vectorstore.similarity_search(query="", k=1000) 
-    all_texts = [doc.page_content for doc in all_docs]
-    all_metadatas = [doc.metadata for doc in all_docs]
-
-    dense_scores = [
-        float(vectorstore._embedding_retriever._cosine_score(doc, query))
-        for doc in all_texts
-    ]
-
-    sparse_scores = []
-    for i in range(len(all_texts)):
-        indices = all_metadatas[i]["sparse_indices"]
-        values = all_metadatas[i]["sparse_values"]
-        sparse_vec = np.zeros(30522) 
-        for idx, val in zip(indices, values):
-            sparse_vec[idx] = max(sparse_vec[idx], val)
-        query_embedding = next(sparse_model.embed([query]))
-        query_vec = np.zeros(30522)
-        for idx, val in zip(query_embedding.indices, query_embedding.values):
-            query_vec[idx] = val
-        sparse_score = np.dot(sparse_vec, query_vec) / (np.linalg.norm(sparse_vec) * np.linalg.norm(query_vec) + 1e-8)
-        sparse_scores.append(sparse_score)
-
-    # Kết hợp hybrid score
-    combined_scores = [
-        (1 - hybrid_factor) * dense + hybrid_factor * sparse
-        for dense, sparse in zip(dense_scores, sparse_scores)
-    ]
-    scored_docs = sorted(zip(combined_scores, all_texts), key=lambda x: x[0], reverse=True)
-
-    # Trả về top-k kết quả
-    results = [doc[1] for doc in scored_docs[:num_documents]]
-    return results
-
-def get_reranked_documents_with_hybrid_sparse_colbert(client, collection_name, query, num_documents=5):
-    """
-    Rerank tài liệu bằng cách kết hợp ColBERT + SPLADE (sparse).
-    """
-    search_results = client.query(
-        collection_name=collection_name,
-        query_text=query,
-        limit=num_documents + 4,
-    )
-    results = [(r.metadata["document"], r.metadata) for r in search_results]
-    texts = [doc for doc, meta in results]
-    colbert_scores = colbert_reranker.rank(query, texts, k=len(texts), return_sorted=False)
-
-    sparse_scores = []
-    query_embedding: SparseEmbedding = next(sparse_model.embed([query]))
-    query_vec = np.zeros(30522)
-    for idx, val in zip(query_embedding.indices, query_embedding.values):
-        query_vec[idx] = val
-
-    for _, meta in results:
-        indices = meta["sparse_indices"]
-        values = meta["sparse_values"]
-        sparse_vec = np.zeros(30522)
-        for idx, val in zip(indices, values):
-            sparse_vec[idx] = max(sparse_vec[idx], val)
-        sparse_score = np.dot(sparse_vec, query_vec) / (
-            np.linalg.norm(sparse_vec) * np.linalg.norm(query_vec) + 1e-8
-        )
-        sparse_scores.append(sparse_score)
-
-    hybrid_scores = [0.6 * c + 0.4 * s for c, s in zip(colbert_scores, sparse_scores)]
-    scored_docs = sorted(zip(hybrid_scores, texts), key=lambda x: x[0], reverse=True)
-
-    return [doc for score, doc in scored_docs[:num_documents]]

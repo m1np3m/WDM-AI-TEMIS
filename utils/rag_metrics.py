@@ -1,34 +1,42 @@
-def is_in_top_k(retrieved_docs, ground_truth_doc, top_k=5):
-    """Kiểm tra xem ground truth có nằm trong top-k tài liệu không."""
-    for doc in retrieved_docs[:top_k]:
-        if doc.strip() == ground_truth_doc.strip():
-            return True
+from sentence_transformers import SentenceTransformer, util
+import numpy as np
+
+model = SentenceTransformer('all-MiniLM-L6-v2')  
+
+def semantic_hit(retrieved_docs, ground_truth_docs, top_k=5, threshold=0.8):
+    """Kiểm tra semantic similarity với cosine @top_k"""
+    retrieved_docs = retrieved_docs[:top_k]
+    for ret in retrieved_docs:
+        for gt in ground_truth_docs:
+            score = util.cos_sim(model.encode(ret), model.encode(gt)).item()
+            if score >= threshold:
+                return True
     return False
 
 
-def calculate_hit_rate(df, retrieved_col='contexts', ground_truth_col='ground_truth', top_k=5):
-    """Tính Hit Rate @ K"""
-    df['hit'] = df.apply(
-        lambda row: is_in_top_k(row[retrieved_col], row[ground_truth_col], top_k),
+def calculate_semantic_hit_rate(df, retrieved_col='retrieved_contexts', ground_truth_col='reference_contexts', top_k=5, threshold=0.8):
+    """Tính semantic Hit Rate @ K bằng cosine similarity"""
+    df['semantic_hit'] = df.apply(
+        lambda row: semantic_hit(row[retrieved_col], row[ground_truth_col], top_k, threshold),
         axis=1
     )
-    hit_rate = df['hit'].mean()
-    return hit_rate
+    return df['semantic_hit'].mean()
 
 
-def reciprocal_rank(retrieved_docs, ground_truth_doc):
-    """Tính Reciprocal Rank (1/rank) của ground truth trong danh sách tài liệu."""
-    for i, doc in enumerate(retrieved_docs):
-        if doc.strip() == ground_truth_doc.strip():
-            return 1.0 / (i + 1)
+def semantic_rr(retrieved_docs, ground_truth_docs, threshold=0.8):
+    """Tính Reciprocal Rank theo semantic similarity"""
+    for i, ret in enumerate(retrieved_docs):
+        for gt in ground_truth_docs:
+            score = util.cos_sim(model.encode(ret), model.encode(gt)).item()
+            if score >= threshold:
+                return 1.0 / (i + 1)
     return 0.0
 
 
-def calculate_mrr(df, retrieved_col='contexts', ground_truth_col='ground_truth'):
-    """Tính Mean Reciprocal Rank (MRR)"""
-    df['rr'] = df.apply(
-        lambda row: reciprocal_rank(row[retrieved_col], row[ground_truth_col]),
+def calculate_semantic_mrr(df, retrieved_col='retrieved_contexts', ground_truth_col='reference_contexts', threshold=0.8):
+    """Tính Mean Reciprocal Rank theo semantic similarity"""
+    df['semantic_rr'] = df.apply(
+        lambda row: semantic_rr(row[retrieved_col], row[ground_truth_col], threshold),
         axis=1
     )
-    mrr = df['rr'].mean()
-    return mrr
+    return df['semantic_rr'].mean()
