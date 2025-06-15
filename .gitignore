@@ -4,17 +4,20 @@ __pycache__/
 *$py.class
 test*.*
 
+*.csv
+
 # Environments
 .env
 .venv
 env/
 venv/
 ENV/
-src/
 env.bak/
 venv.bak/
 img/
-
+*.lock
+*.toml
+*.python-version
 # IDE configuration files
 .idea/            # JetBrains IDEs (PyCharm, IntelliJ)
 .vscode/          # Visual Studio Code (allow .vscode/launch.json and .vscode/tasks.json if team shares them)
@@ -31,3 +34,8 @@ data/raw/
 data/processed/
 data/pdfs/
 gdsc2025-74596a254ab4.json
+
+# secret key
+key_*.*
+qdrant_client_memory/
+test_*/
