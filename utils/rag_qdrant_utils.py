@@ -1,107 +1,228 @@
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_qdrant import Qdrant
-from langchain.docstore.document import Document as LangchainDocument
 import os
-import json
-import fitz  
-def summarize_table(folder_path):
-    summary_documents = []
-    tables_sources = json.load(open(f"{folder_path}/final_tables.json", 'r', encoding='utf-8'))
-    sources = list(tables_sources.keys())
-    for source in sources:
-        for table in tables_sources[source]:
-            summary_document = LangchainDocument(
-                # summary =summary_fn(table['table_content']),
-                page_content=table['table_content'],
-                metadata={
-                    "source": source,
-                    "page_numbers": table['page_numbers'],
-                    "is_table": True,
-                    "source_table_idx": table['table_idx']
-                }
+import time
+from typing import List, Optional, Callable
+
+from langchain.vectorstores import Qdrant
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.text_splitter import (
+    RecursiveCharacterTextSplitter,
+    CharacterTextSplitter,
+)
+from langchain_experimental.text_splitter import SemanticChunker
+from langchain.prompts import PromptTemplate
+from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
+from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
+from qdrant_client import QdrantClient, models
+from qdrant_client.http.models import Distance, VectorParams, SparseVectorParams
+
+class QdrantRAG:
+    def __init__(self, client: QdrantClient):
+        self.client = client
+
+    def _get_text_splitter(self, chunk_type, chunk_size, chunk_overlap):
+        if chunk_type == 'recursive':
+            return RecursiveCharacterTextSplitter(
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                add_start_index=True,
+                separators=["\n\n", "\n", ".", " ", ""],
             )
-            summary_documents.append(summary_document)
-    return summary_documents
-
-def get_detail_chunks(pdf_path):
-    doc = fitz.open(pdf_path)
-    source = os.path.splitext(os.path.basename(pdf_path))[0]
-
-    page_documents = []
-    for page_num in range(len(doc)):
-        page = doc.load_page(page_num)
-        text = page.get_text().strip()
-        if not text:
-            continue
-
-        page_document = LangchainDocument(
-            page_content=text,
-            metadata={
-                "source": source,
-                "page_numbers": [page_num + 1], 
-                "is_table": False
-            }
-        )
-        page_documents.append(page_document)
-
-    doc.close()
-    return page_documents
-
-def process_all_pdfs_in_folder(folder_path):
-    all_page_documents = []
-    all_table_documents = []
-
-    for filename in os.listdir(folder_path):
-        if filename.lower().endswith(".pdf"):
-            pdf_path = os.path.join(folder_path, filename)
-            print(f"\n>>> Đang xử lý: {pdf_path}")
-            page_docs = get_detail_chunks(pdf_path)
-            all_page_documents.extend(page_docs)
-            table_docs = summarize_table(folder_path)
-            all_table_documents.extend(table_docs)
-
-    return all_page_documents, all_table_documents
-
-def add_documents(client, collection_name, documents, chunk_size, chunk_overlap, embedding_model_name):
-    """
-    This function adds documents to the desired Qdrant collection given the specified RAG parameters.
-    """
-
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        add_start_index=True,
-        separators=["\n\n", "\n", ".", " ", ""],
-    )
-
-    docs_processed = []
-    for doc in documents:
-        docs_processed += text_splitter.split_documents([doc])
-
-    docs_contents = []
-    docs_metadatas = []
-
-    for doc in docs_processed:
-        if hasattr(doc, 'page_content') and hasattr(doc, 'metadata'):
-            docs_contents.append(doc.page_content)
-            docs_metadatas.append(doc.metadata)
+        elif chunk_type == 'character':
+            return CharacterTextSplitter(
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                add_start_index=True,
+                separator="\n\n",
+            )
+        elif chunk_type == 'semantic':
+            embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+            return SemanticChunker(
+                embedding_model,
+                breakpoint_threshold_type="percentile",
+                breakpoint_threshold_amount=95,
+            )
         else:
-            print("Warning: Some documents do not have 'page_content' or 'metadata' attributes.")
+            raise ValueError("Invalid chunk_type")
 
-    client.set_model(embedding_model_name=embedding_model_name)
-    client.add(collection_name=collection_name, metadata=docs_metadatas, documents=docs_contents)
+    def add_documents(self, collection_name, documents, tables, chunk_type, chunk_size, chunk_overlap, embedding_model_name):
+        text_splitter = self._get_text_splitter(chunk_type, chunk_size, chunk_overlap)
+        docs_processed = []
+        for doc in documents:
+            docs_processed += text_splitter.split_documents([doc])
+        docs_processed += tables
+
+        docs_contents = [doc.page_content for doc in docs_processed if hasattr(doc, 'page_content')]
+        docs_metadatas = [doc.metadata for doc in docs_processed if hasattr(doc, 'metadata')]
+
+        self.client.set_model(embedding_model_name=embedding_model_name)
+        self.client.add(collection_name=collection_name, metadata=docs_metadatas, documents=docs_contents)
+
+    def add_documents_with_gemini(self, collection_name, documents, tables, chunk_size, chunk_overlap, embedding_model_name):
+        embedding_model = GoogleGenerativeAIEmbeddings(
+            model=embedding_model_name,
+            google_api_key=os.getenv("GEMINI_API_KEY"),
+        )
+
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            add_start_index=True,
+            separators=["\n\n", "\n", ".", " ", ""],
+        )
+
+        docs_processed = []
+        for doc in documents:
+            docs_processed += text_splitter.split_documents([doc])
+        docs_processed += tables
+
+        docs_contents = [doc.page_content for doc in docs_processed if hasattr(doc, 'page_content')]
+        docs_metadatas = [doc.metadata for doc in docs_processed if hasattr(doc, 'metadata')]
+        dense_embeddings = HuggingFaceEmbeddings(model_name=embedding_model_name)
+        vector_size = len(dense_embeddings.embed_query("test"))
+        if collection_name not in [col.name for col in self.client.get_collections().collections]:
+            self.client.create_collection(
+                collection_name=collection_name,
+                vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE)
+            )
+
+        vectorstore = Qdrant(
+            client=self.client,
+            collection_name=collection_name,
+            embeddings=embedding_model,
+        )
+
+        vectorstore.add_texts(texts=docs_contents, metadatas=docs_metadatas)
+
+    def add_documents_hybrid(
+        self,
+        collection_name,
+        documents,
+        tables,
+        chunk_type,
+        chunk_size,
+        chunk_overlap,
+        embedding_model_name="sentence-transformers/all-MiniLM-L6-v2",
+        sparse_model_name="Qdrant/bm25",
+    ):
+        # Split documents
+        text_splitter = self._get_text_splitter(chunk_type, chunk_size, chunk_overlap)
+        docs_processed = []
+        for doc in documents:
+            docs_processed += text_splitter.split_documents([doc])
+        docs_processed += tables
+
+        docs_contents = [doc.page_content for doc in docs_processed if hasattr(doc, 'page_content')]
+        docs_metadatas = [doc.metadata for doc in docs_processed if hasattr(doc, 'metadata')]
+
+        # Create collection with BOTH dense & sparse vector configs
+        dense_embeddings = HuggingFaceEmbeddings(model_name=embedding_model_name, model_kwargs={"device": "cuda"})
+        sparse_embeddings = FastEmbedSparse(model_name=sparse_model_name)
+        vector_size = len(dense_embeddings.embed_query("test"))
+
+        if collection_name not in [col.name for col in self.client.get_collections().collections]:
+            self.client.create_collection(
+                collection_name=collection_name,
+                vectors_config={
+                    "dense": VectorParams(size=vector_size, distance=Distance.COSINE),  # change size if needed
+                },
+                sparse_vectors_config={
+                    "sparse": SparseVectorParams(index=models.SparseIndexParams(on_disk=True))
+
+                },
+            )
 
 
-def get_documents(client, collection_name, query, embedding_model, num_documents=5):
-    """
-    This function retrieves the desired number of documents from the Qdrant collection given a query.
-    It returns a list of the retrieved documents.
-    """
-    client.set_model(embedding_model_name=embedding_model)
-    search_results = client.query(
-        collection_name=collection_name,
-        query_text=query,
-        limit=num_documents,
-    )
-    results = [r.metadata['document'] for r in search_results]
-    return results
+        vectorstore = QdrantVectorStore(
+            client=self.client,
+            collection_name=collection_name,
+            embedding=dense_embeddings,
+            sparse_embedding=sparse_embeddings,
+            retrieval_mode=RetrievalMode.HYBRID,
+            vector_name="dense",
+            sparse_vector_name="sparse",
+        )
+
+        # Add texts to vector store (it will handle both vectors)
+        vectorstore.add_texts(texts=docs_contents, metadatas=docs_metadatas)
+
+
+    def get_documents(self, collection_name, query, embedding_model, num_documents=5):
+        self.client.set_model(embedding_model_name=embedding_model)
+        search_results = self.client.query(
+            collection_name=collection_name,
+            query_text=query,
+            limit=num_documents,
+        )
+        return [r.metadata['document'] for r in search_results]
+
+    def get_documents_gemini(self, collection_name, query, num_documents=5):
+        embedding_model = GoogleGenerativeAIEmbeddings(
+            model="models/embedding-001",
+            google_api_key=os.getenv("GEMINI_API_KEY")
+        )
+
+        vectorstore = Qdrant(
+            client=self.client,
+            collection_name=collection_name,
+            embeddings=embedding_model,
+        )
+
+        search_results = vectorstore.similarity_search(query, k=num_documents)
+        return [r.page_content for r in search_results]
+
+    def get_documents_hybrid(self, collection_name, query, embedding_model_name, num_documents=5, reranker: Optional[Callable] = None):
+        dense_embeddings = FastEmbedEmbeddings(model_name=embedding_model_name)
+        sparse_embeddings = FastEmbedSparse(model_name="Qdrant/bm25")
+
+        vectorstore = QdrantVectorStore(
+            client=self.client,
+            collection_name=collection_name,
+            embedding=dense_embeddings,
+            sparse_embedding=sparse_embeddings,
+            retrieval_mode=RetrievalMode.HYBRID,
+            vector_name="dense",
+            sparse_vector_name="sparse"
+        )
+
+        raw_results = vectorstore.similarity_search(query)
+        documents = [doc.page_content for doc in raw_results]
+
+
+        if reranker:
+            documents = reranker(query, documents, top_k=num_documents)
+
+        return documents[:num_documents]
+
+    def generate_model_output(self, user_query: str, documents: List[str]) -> str:
+        prompt = PromptTemplate.from_template(
+            f"""
+            You are an assistant that can answer questions based on the content of documents and filter information to give the best answer.
+            Here are some document fragments retrieved from a PDF document:
+            {documents}
+            Based on the content of the documents, please answer the following question in no more than 1-2 sentences with the most relevant and concise answer:
+            {user_query}
+            """
+        )
+        return ""
+    
+    def doc_retrieval_function(self, collection_name, query, embedding_model, chunk_type=1, chunk_size=500, chunk_overlap=50, num_documents=5, reranker=None):
+        documents = self.get_documents_hybrid(
+            collection_name=collection_name,
+            query=query,
+            embedding_model_name=embedding_model,
+            num_documents=num_documents,
+            reranker=reranker,
+        )
+        return documents
+
+
+    def full_pipeline(self, collection_name, query, embedding_model, chunk_type=1, chunk_size=500, chunk_overlap=50, num_documents=5, reranker=None):
+        documents = self.get_documents_hybrid(
+            collection_name=collection_name,
+            query=query,
+            embedding_model_name=embedding_model,
+            num_documents=num_documents,
+            reranker=reranker,
+        )
+        return self.generate_model_output(user_query=query, documents=documents)

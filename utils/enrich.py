@@ -180,10 +180,10 @@ class Enrich_Openrouter:
         filename = os.path.basename(file_path)
         request_counters = {key: 0 for key in list_keys}
         api_key = self.get_valid_key(request_counters)
+
         if not file_path.lower().endswith(".png"):
             print("Không phải ảnh PNG")
             return
-
         try:
             with open(file_path, "rb") as img_file:
                 base64_image = base64.b64encode(img_file.read()).decode("utf-8")
