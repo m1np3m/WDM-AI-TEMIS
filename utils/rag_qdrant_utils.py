@@ -12,6 +12,7 @@ from langchain.text_splitter import (
 from langchain_experimental.text_splitter import SemanticChunker
 from langchain.prompts import PromptTemplate
 from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
+from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.models import Distance, VectorParams, SparseVectorParams
 
@@ -115,7 +116,7 @@ class QdrantRAG:
         docs_metadatas = [doc.metadata for doc in docs_processed if hasattr(doc, 'metadata')]
 
         # Create collection with BOTH dense & sparse vector configs
-        dense_embeddings = HuggingFaceEmbeddings(model_name=embedding_model_name, model_kwargs={"device": "cpu"})
+        dense_embeddings = HuggingFaceEmbeddings(model_name=embedding_model_name, model_kwargs={"device": "cuda"})
         sparse_embeddings = FastEmbedSparse(model_name=sparse_model_name)
         vector_size = len(dense_embeddings.embed_query("test"))
 
@@ -126,7 +127,7 @@ class QdrantRAG:
                     "dense": VectorParams(size=vector_size, distance=Distance.COSINE),  # change size if needed
                 },
                 sparse_vectors_config={
-                    "sparse": SparseVectorParams(index=models.SparseIndexParams(on_disk=False))
+                    "sparse": SparseVectorParams(index=models.SparseIndexParams(on_disk=True))
 
                 },
             )
@@ -171,7 +172,7 @@ class QdrantRAG:
         return [r.page_content for r in search_results]
 
     def get_documents_hybrid(self, collection_name, query, embedding_model_name, num_documents=5, reranker: Optional[Callable] = None):
-        dense_embeddings = HuggingFaceEmbeddings(model_name=embedding_model_name)
+        dense_embeddings = FastEmbedEmbeddings(model_name=embedding_model_name)
         sparse_embeddings = FastEmbedSparse(model_name="Qdrant/bm25")
 
         vectorstore = QdrantVectorStore(
@@ -184,10 +185,9 @@ class QdrantRAG:
             sparse_vector_name="sparse"
         )
 
-        raw_results = vectorstore.similarity_search(query, k=num_documents)
+        raw_results = vectorstore.similarity_search(query)
         documents = [doc.page_content for doc in raw_results]
-        import torch
-        torch.cuda.empty_cache()
+
 
         if reranker:
             documents = reranker(query, documents, top_k=num_documents)
