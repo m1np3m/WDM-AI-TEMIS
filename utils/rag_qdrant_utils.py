@@ -78,13 +78,17 @@ class QdrantRAG:
 
         docs_contents = [doc.page_content for doc in docs_processed if hasattr(doc, 'page_content')]
         docs_metadatas = [doc.metadata for doc in docs_processed if hasattr(doc, 'metadata')]
-        dense_embeddings = HuggingFaceEmbeddings(model_name=embedding_model_name)
-        vector_size = len(dense_embeddings.embed_query("test"))
+        
+        test_embedding = embedding_model.embed_query("test")
+        actual_vector_size = len(test_embedding)
+        
         if collection_name not in [col.name for col in self.client.get_collections().collections]:
             self.client.create_collection(
                 collection_name=collection_name,
-                vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE)
+                vectors_config=VectorParams(size=actual_vector_size, distance=Distance.COSINE)
             )
+        else:
+            pass
 
         vectorstore = Qdrant(
             client=self.client,
