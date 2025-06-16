@@ -1,6 +1,7 @@
 import os
 import time
 from typing import List, Optional, Callable
+import torch
 
 from langchain.vectorstores import Qdrant
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
@@ -120,7 +121,8 @@ class QdrantRAG:
         docs_metadatas = [doc.metadata for doc in docs_processed if hasattr(doc, 'metadata')]
 
         # Create collection with BOTH dense & sparse vector configs
-        dense_embeddings = HuggingFaceEmbeddings(model_name=embedding_model_name, model_kwargs={"device": "cuda"})
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        dense_embeddings = HuggingFaceEmbeddings(model_name=embedding_model_name, model_kwargs={"device": device})
         sparse_embeddings = FastEmbedSparse(model_name=sparse_model_name)
         vector_size = len(dense_embeddings.embed_query("test"))
 
@@ -160,9 +162,9 @@ class QdrantRAG:
         )
         return [r.metadata['document'] for r in search_results]
 
-    def get_documents_gemini(self, collection_name, query, num_documents=5):
+    def get_documents_gemini(self, collection_name, query, embedding_model="models/embedding-001", num_documents=5):
         embedding_model = GoogleGenerativeAIEmbeddings(
-            model="models/embedding-001",
+            model=embedding_model,
             google_api_key=os.getenv("GEMINI_API_KEY")
         )
 
