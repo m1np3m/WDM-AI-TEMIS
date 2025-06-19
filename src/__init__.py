@@ -14,6 +14,7 @@ from .WDMParser import (
     Enrich_Openrouter,
     Enrich_VertexAI
 )
+from .vectorstore import VectorStore
 
 __all__ = [
     "WDMPDFParser",
@@ -27,5 +28,6 @@ __all__ = [
     "setup_default_credentials", 
     "print_credentials_help",
     "Enrich_Openrouter",
-    "Enrich_VertexAI"
+    "Enrich_VertexAI",
+    "VectorStore"
 ]
