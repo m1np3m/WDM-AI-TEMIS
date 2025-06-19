@@ -1,10 +1,13 @@
 import base64
 import os
 from typing import List, Tuple, TypedDict
+from dotenv import load_dotenv
 
 import pymupdf
 
 from .extract_tables import WDMMergedTable, WDMTable, full_pipeline, get_tables_from_pdf
+
+load_dotenv()
 
 
 class WDMText(TypedDict):
@@ -37,6 +40,10 @@ class WDMPDFParser:
         self.credential_path = credential_path
         self.debug = debug
         self.debug_level = debug_level
+        
+        # auto setup credential path
+        if not credential_path:
+            self.credential_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
 
     def extract_tables(
         self,

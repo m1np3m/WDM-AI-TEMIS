@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import StringIO
 from multiprocessing import Pool, cpu_count
@@ -376,51 +377,66 @@ def process_single_page(
     Returns:
         List of table objects found on the page
     """
+    page_idx, pdf_path, source = page_info
+    doc = None
+    page_tables = []
+    
     try:
-        page_idx, pdf_path, source = page_info
-        # Open document in each process
+        # Open document in each process with better memory management
         doc = pymupdf.open(pdf_path)
         page = doc.load_page(page_idx)
         tables = page.find_tables(strategy="lines_strict").tables
-        page_tables = []
 
         if tables:
             # Ensure IMAGE_OUTPUT_DIR exists
             os.makedirs(IMAGE_OUTPUT_DIR, exist_ok=True)
 
             for idx, table in enumerate(tables):
-                bbox = table.bbox
-                # lấy hình ảnh ra
-                pix = page.get_pixmap(clip=bbox, dpi=200)
-                # bắt đầu lưu hình ảnh
-                output_filename = (
-                    f"{IMAGE_OUTPUT_DIR}/{source}_{page_idx + 1}_table_{idx}.png"
-                )
-                pix.save(output_filename)
-                n_rows = table.row_count
-                n_columns = table.col_count
-                text = table.to_markdown()
+                try:
+                    bbox = table.bbox
+                    # Get image with optimized DPI for balance between quality and performance
+                    pix = page.get_pixmap(clip=bbox, dpi=150)  # Reduced from 200 to 150 for performance
+                    
+                    # Generate output filename
+                    output_filename = (
+                        f"{IMAGE_OUTPUT_DIR}/{source}_{page_idx + 1}_table_{idx}.png"
+                    )
+                    pix.save(output_filename)
+                    
+                    # Clean up pixmap immediately to free memory
+                    pix = None
+                    
+                    n_rows = table.row_count
+                    n_columns = table.col_count
+                    text = table.to_markdown()
 
-                table_obj = {
-                    "text": text,
-                    "page": page_idx + 1,
-                    "source": source,
-                    "n_rows": n_rows,
-                    "n_columns": n_columns,
-                    "bbox": bbox,
-                    "context_before": "",  # Will be filled later
-                    "is_new_section_context": False,
-                    "image_path": output_filename,
-                }
-                page_tables.append(table_obj)
+                    table_obj = {
+                        "text": text,
+                        "page": page_idx + 1,
+                        "source": source,
+                        "n_rows": n_rows,
+                        "n_columns": n_columns,
+                        "bbox": bbox,
+                        "context_before": "",  # Will be filled later
+                        "is_new_section_context": False,
+                        "image_path": output_filename,
+                    }
+                    page_tables.append(table_obj)
+                    
+                except Exception as table_error:
+                    if log:
+                        logger.error(f"Error processing table {idx} on page {page_idx + 1}: {str(table_error)}")
+                    continue
 
-        # Close document in this process
-        doc.close()
-        return page_tables
     except Exception as e:
         if log:
             logger.error(f"Error processing page {page_idx + 1}: {str(e)}")
-        return []
+    finally:
+        # Ensure document is always closed to prevent memory leaks
+        if doc is not None:
+            doc.close()
+            
+    return page_tables
 
 
 def get_n_rows_from_markdown(markdown_text: str, n_rows: int) -> str:
@@ -504,18 +520,24 @@ def get_tables_from_pdf(
     # Prepare page info for parallel processing
     page_infos = [(page - 1, pdf_path, source) for page in pages]
 
-    # Determine number of processes (use 75% of available CPU cores)
-    n_processes = max(1, int(cpu_count() * 0.75))
+    # OPTIMIZED: Dynamic process count based on workload size
+    if len(page_infos) < 4:
+        n_processes = 1  # Sequential processing for small workloads to avoid overhead
+    elif len(page_infos) < 20:
+        n_processes = min(4, cpu_count())  # Conservative for medium workloads
+    else:
+        n_processes = max(1, int(cpu_count() * 0.9))  # More aggressive for large workloads
+    
     if debug:
-        logger.info(f"Using {n_processes} processes for parallel processing")
+        logger.info(f"Using {n_processes} processes for {len(page_infos)} pages")
 
-    # Process pages in parallel
+    # OPTIMIZED: Process pages in parallel with memory leak prevention
     total_tables = []
-    with Pool(processes=n_processes) as pool:
-        # Use tqdm to show progress
+    with Pool(processes=n_processes, maxtasksperchild=10) as pool:
+        # Use imap_unordered for better performance since order will be restored later
         results = list(
             tqdm(
-                pool.imap(process_single_page, page_infos),
+                pool.imap_unordered(process_single_page, page_infos),
                 total=len(page_infos),
                 desc="Processing pages",
             )
@@ -676,66 +698,46 @@ def get_tables_from_pdf(
                 start_time = time.time()
                 if debug:
                     logger.info(
-                        f"Processing {len(total_tables)} table(s) for enrichment with parallel processing"
+                        f"Processing {len(total_tables)} table(s) for enrichment with async processing"
                     )
 
                 processor = Enrich_VertexAI(credentials_path=credential_path)
                 result_path = "vertex_chat_results.json"
 
-                # Initialize enriched_markdowns list with None values to maintain order
-                enriched_markdowns = [None] * len(total_tables)
-
-                # Use ThreadPoolExecutor for parallel processing with max 2 workers to avoid rate limits
-                with ThreadPoolExecutor(max_workers=5) as executor:
-                    # Submit all tasks
-                    future_to_index = {
-                        executor.submit(
-                            enrich_single_table_markdown,
-                            processor,
-                            table,
-                            result_path,
-                            i,
-                            debug,
-                        ): i
-                        for i, table in enumerate(total_tables)
-                    }
-
-                    # Process completed tasks with progress tracking
-                    completed_count = 0
-                    for future in as_completed(future_to_index):
-                        try:
-                            table_index, enriched_markdown = future.result()
-                            enriched_markdowns[table_index] = enriched_markdown
-                            completed_count += 1
-                            if debug:
-                                logger.info(
-                                    f"Completed {completed_count}/{len(total_tables)} table enrichments"
-                                )
-                        except Exception as exc:
-                            table_index = future_to_index[future]
-                            if debug:
-                                logger.error(
-                                    f"Table {table_index + 1} generated an exception: {exc}"
-                                )
-                            # Use original markdown as fallback
-                            enriched_markdowns[table_index] = total_tables[table_index][
-                                "text"
-                            ]
+                # OPTIMIZED: Use async enrichment with better concurrency control
+                try:
+                    # Check if we're already in an event loop
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # If already in a loop, use nest_asyncio or run in thread
+                        import concurrent.futures
+                        with concurrent.futures.ThreadPoolExecutor() as executor:
+                            future = executor.submit(
+                                asyncio.run,
+                                async_enrich_tables(total_tables, processor, result_path, debug)
+                            )
+                            enriched_markdowns = future.result()
+                    else:
+                        # Safe to create new event loop
+                        enriched_markdowns = asyncio.run(
+                            async_enrich_tables(total_tables, processor, result_path, debug)
+                        )
+                except RuntimeError:
+                    # Fallback: create new event loop
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        enriched_markdowns = loop.run_until_complete(
+                            async_enrich_tables(total_tables, processor, result_path, debug)
+                        )
+                    finally:
+                        loop.close()
 
                 if debug:
                     elapsed_time = time.time() - start_time
                     logger.info(
                         f"All table enrichments completed in {elapsed_time:.2f}s (avg: {elapsed_time / len(total_tables):.2f}s per table)"
                     )
-
-                # Ensure no None values in enriched_markdowns (fallback for any failed enrichments)
-                for i, enriched_markdown in enumerate(enriched_markdowns):
-                    if enriched_markdown is None:
-                        if debug:
-                            logger.warning(
-                                f"Table {i + 1} enrichment was None, using original markdown"
-                            )
-                        enriched_markdowns[i] = total_tables[i]["text"]
 
                 # Update tables with enriched markdown
                 for i, enriched_markdown in enumerate(enriched_markdowns):
@@ -884,6 +886,83 @@ def enrich_single_table_markdown(
         return table_index, table["text"]
 
 
+async def async_enrich_tables(
+    total_tables: List[WDMTable],
+    processor: Enrich_VertexAI,
+    result_path: str,
+    debug: bool = False,
+) -> List[str]:
+    """
+    Asynchronously enrich tables with better concurrency control and rate limiting.
+    
+    Args:
+        total_tables: List of tables to enrich
+        processor: VertexAI processor instance
+        result_path: Path to save results
+        debug: Enable debug logging
+        
+    Returns:
+        List of enriched markdown strings in order
+    """
+    # Control concurrent API calls to avoid rate limiting
+    semaphore = asyncio.Semaphore(3)  # Max 3 concurrent requests
+    
+    async def enrich_single_async(table: WDMTable, table_index: int) -> Tuple[int, str]:
+        async with semaphore:
+            # Staggered delay to prevent API rate limiting
+            if table_index > 0:
+                await asyncio.sleep(0.8 * (table_index % 3))  # Staggered delays
+            
+            # Run the blocking enrichment function in thread pool
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(
+                None,
+                enrich_single_table_markdown,
+                processor,
+                table,
+                result_path,
+                table_index,
+                debug,
+            )
+    
+    if debug:
+        logger.info(f"Starting async enrichment of {len(total_tables)} tables with max 3 concurrent requests")
+    
+    # Create all tasks
+    tasks = [
+        enrich_single_async(table, i)
+        for i, table in enumerate(total_tables)
+    ]
+    
+    # Execute all tasks concurrently with progress tracking
+    enriched_markdowns = [None] * len(total_tables)
+    completed_count = 0
+    
+    for coro in asyncio.as_completed(tasks):
+        try:
+            table_index, enriched_markdown = await coro
+            enriched_markdowns[table_index] = enriched_markdown
+            completed_count += 1
+            
+            if debug:
+                logger.info(f"Completed {completed_count}/{len(total_tables)} table enrichments")
+                
+        except Exception as exc:
+            if debug:
+                logger.error(f"Enrichment task generated an exception: {exc}")
+            # Handle failed tasks by using original markdown
+            continue
+    
+    # Ensure no None values (fallback for any failed enrichments)
+    for i, enriched_markdown in enumerate(enriched_markdowns):
+        if enriched_markdown is None:
+            if debug:
+                logger.warning(f"Table {i + 1} enrichment failed, using original markdown")
+            enriched_markdowns[i] = total_tables[i]["text"]
+    
+    return enriched_markdowns
+
+
 def find_spanned_table_groups(tables: List[WDMTable]) -> List[List[WDMTable]]:
     """
     Tìm các nhóm bảng kéo dài qua nhiều trang (span multipage).
@@ -1011,45 +1090,43 @@ def merge_tables(
     debug: bool = False,
 ) -> WDMMergedTable:
     try:
-        # Convert each table's markdown text to a DataFrame
-        # Tables are now pre-enriched if enrich was requested in get_tables_from_pdf_2
-        dfs = [convert_markdown_to_df(table["text"]) for table in tables]
+        # OPTIMIZED: Early validation to avoid unnecessary processing
+        if not tables:
+            raise ValueError("No tables provided for merging")
+            
+        if len(tables) == 1:
+            # Single table case - no merging needed
+            table = tables[0]
+            return WDMMergedTable(
+                text=table["text"],
+                page=[table["page"]],
+                source=table["source"],
+                bbox=[table["bbox"]],
+                headers=[get_headers_from_markdown(table["text"])],
+                n_rows=table["n_rows"],
+                n_columns=table["n_columns"],
+                context_before=table["context_before"],
+                image_paths=[table["image_path"]],
+            )
 
-        # Handle single-row tables that might have data as column names
-        processed_dfs = []
-        for i, df in enumerate(dfs):
-            # Check if this DataFrame might have data as column names
-            # This happens when a table has only 1 data row and pandas treats it as headers
-            if len(df) <= 1:
-                # Check if we have only one row and it's all NaN values
-                if len(df) == 1 and df.iloc[0].isna().all():
-                    # Get column names (which might be the actual data)
-                    col_names = list(df.columns)
+        # Convert each table's markdown text to a DataFrame with memory optimization
+        dfs = []
+        for i, table in enumerate(tables):
+            try:
+                df = convert_markdown_to_df(table["text"])
+                if not df.empty:
+                    dfs.append(df)
+                elif debug:
+                    logger.warning(f"Table {i} converted to empty DataFrame, skipping")
+            except Exception as e:
+                if debug:
+                    logger.error(f"Error converting table {i} to DataFrame: {e}")
+                continue
 
-                    # Convert column names back to a data row
-                    data_row = pd.DataFrame([col_names])
-                    # Give it generic column names
-                    data_row.columns = [f"Col_{j}" for j in range(len(col_names))]
-                    processed_dfs.append(data_row)
-                    if debug:
-                        logger.debug(
-                            f"Table {i}: Converted misinterpreted headers back to data row"
-                        )
-                else:
-                    processed_dfs.append(df)
-            else:
-                processed_dfs.append(df)
-
-        # Update dfs to use processed versions
-        dfs = processed_dfs
-
-        # Filter out empty DataFrames
-        non_empty_dfs = [df for df in dfs if not df.empty and df.shape[1] > 0]
-
-        if not non_empty_dfs:
-            # If all DataFrames are empty, return a fallback merged table
+        # Early exit if no valid DataFrames
+        if not dfs:
             if debug:
-                logger.warning("All DataFrames are empty, returning fallback table")
+                logger.warning("No valid DataFrames created, returning fallback table")
             first_table = tables[0]
             return WDMMergedTable(
                 text=first_table["text"],
@@ -1063,92 +1140,94 @@ def merge_tables(
                 image_paths=[first_table["image_path"]],
             )
 
-        # Determine the maximum number of columns across all DataFrames
-        max_cols = max(df.shape[1] for df in non_empty_dfs)
-        dfs = non_empty_dfs
+        # OPTIMIZED: Handle single-row tables that might have data as column names
+        processed_dfs = []
+        for i, df in enumerate(dfs):
+            if len(df) <= 1 and len(df) == 1 and df.iloc[0].isna().all():
+                # Convert column names back to a data row
+                col_names = list(df.columns)
+                data_row = pd.DataFrame([col_names])
+                data_row.columns = [f"Col_{j}" for j in range(len(col_names))]
+                processed_dfs.append(data_row)
+                if debug:
+                    logger.debug(f"Table {i}: Converted misinterpreted headers back to data row")
+            else:
+                processed_dfs.append(df)
 
-        # Get headers from the first table to establish consistent column structure
+        # Clean up original dfs to free memory
+        dfs.clear()
+        dfs = processed_dfs
+
+        # Determine the maximum number of columns and create consistent structure
+        max_cols = max(df.shape[1] for df in dfs)
         target_headers = get_headers_from_markdown(tables[0]["text"])
 
-        # If target_headers length doesn't match max_cols, create a consistent column structure
+        # Normalize header structure
         if len(target_headers) < max_cols:
-            target_headers.extend(
-                [f"Col_{i}" for i in range(len(target_headers), max_cols)]
-            )
+            target_headers.extend([f"Col_{i}" for i in range(len(target_headers), max_cols)])
         elif len(target_headers) > max_cols:
             target_headers = target_headers[:max_cols]
 
-        # Process DataFrames using the safer approach
+        # OPTIMIZED: Process DataFrames with better memory management
         normalized_dfs = []
-
-        # First DataFrame: keep as is (this is our standard with proper headers)
+        
+        # Process first DataFrame (keep as standard with proper headers)
         first_df = dfs[0].copy()
-
-        # Ensure first DataFrame has the right number of columns
         if first_df.shape[1] < max_cols:
             for j in range(first_df.shape[1], max_cols):
                 first_df[f"temp_col_{j}"] = ""
         elif first_df.shape[1] > max_cols:
             first_df = first_df.iloc[:, :max_cols]
-
-        # Set proper column names for first DataFrame
-        first_df.columns = target_headers[: first_df.shape[1]]
+        first_df.columns = target_headers[:first_df.shape[1]]
         normalized_dfs.append(first_df)
 
-        # Process remaining DataFrames: set numeric column names to avoid header confusion
+        # Process remaining DataFrames with numeric column names to avoid confusion
         for i in range(1, len(dfs)):
             df_copy = dfs[i].copy()
-
-            # Ensure it has the right number of columns first
+            
+            # Ensure correct column count
             if df_copy.shape[1] < max_cols:
                 for j in range(df_copy.shape[1], max_cols):
-                    df_copy[j] = ""  # Use numeric column names
+                    df_copy[j] = ""
             elif df_copy.shape[1] > max_cols:
                 df_copy = df_copy.iloc[:, :max_cols]
-
-            # Set NUMERIC column names (0, 1, 2, 3...) to avoid header confusion
+            
+            # Set numeric column names first, then rename to target headers
             df_copy.columns = list(range(df_copy.shape[1]))
-
-            # Now safely rename to target headers
-            df_copy.columns = target_headers[: df_copy.shape[1]]
-
+            df_copy.columns = target_headers[:df_copy.shape[1]]
             normalized_dfs.append(df_copy)
 
-        # Now concatenate the normalized DataFrames
+        # Clean up processed dfs
+        dfs.clear()
+
+        # Concatenate normalized DataFrames
         merged_df = pd.concat(normalized_dfs, ignore_index=True)
+        
+        # Clean up normalized_dfs to free memory
+        normalized_dfs.clear()
 
-        # Post-process: Remove any duplicate header rows (but be more careful)
-        # Only remove header rows if we have enough data rows
-        if len(merged_df) > 2:  # Only try to remove headers if we have more than 2 rows
-            # Check if any row has the same values as the target headers
-            header_mask = merged_df.apply(
-                lambda row: all(
-                    str(row.iloc[i]).strip().lower()
-                    == str(target_headers[i]).strip().lower()
-                    for i in range(min(len(row), len(target_headers)))
-                    if target_headers[i].strip()
-                ),
-                axis=1,
-            )
+        # OPTIMIZED: Post-process merged DataFrame with header duplicate removal
+        if len(merged_df) > 2:
+            # Check for duplicate header rows more efficiently
+            header_values = [str(h).strip().lower() for h in target_headers if str(h).strip()]
+            if header_values:
+                header_mask = merged_df.apply(
+                    lambda row: any(
+                        str(row.iloc[i]).strip().lower() in header_values
+                        for i in range(min(len(row), len(target_headers)))
+                    ), axis=1
+                )
+                
+                # Remove header duplicates but keep at least one data row
+                if header_mask.sum() > 0 and len(merged_df) > header_mask.sum():
+                    merged_df = merged_df[~header_mask]
 
-            # Remove header duplicate rows (but keep at least one row)
-            if header_mask.sum() > 0 and len(merged_df) > header_mask.sum():
-                # Keep only non-header rows
-                merged_df = merged_df[~header_mask]
-                # If we accidentally removed all rows, keep the original
-                if len(merged_df) == 0:
-                    merged_df = pd.concat(normalized_dfs, ignore_index=True)
-
-        # Post-process the merged DataFrame
-        # Convert all columns to string type before filling NaN
-        merged_df = merged_df.astype(str)
-        # Fill NaN values with empty strings
-        merged_df = merged_df.replace("nan", "")
-        # Remove columns with names starting with 'Col' and replace their values with empty strings
+        # Final cleanup and formatting
+        merged_df = merged_df.astype(str).replace("nan", "")
         merged_df.columns = [re.sub(r"^Col\d+", "", col) for col in merged_df.columns]
         merged_df = merged_df.replace(r"^Col\d+", "", regex=True)
 
-        # Create a MergedTable with the combined data
+        # Create and return merged table
         merged_table = WDMMergedTable(
             text=merged_df.to_markdown(index=False),
             page=[table["page"] for table in tables],
@@ -1166,19 +1245,23 @@ def merge_tables(
     except Exception as e:
         if debug:
             logger.error(f"Error merging tables: {str(e)}")
-        # Return a fallback merged table with just the first table
-        first_table = tables[0]
-        return WDMMergedTable(
-            text=first_table["text"],
-            page=[first_table["page"]],
-            source=first_table["source"],
-            bbox=[first_table["bbox"]],
-            headers=[get_headers_from_markdown(first_table["text"])],
-            n_rows=first_table["n_rows"],
-            n_columns=first_table["n_columns"],
-            context_before=first_table["context_before"],
-            image_paths=[first_table["image_path"]],
-        )
+        # Fallback to first table
+        first_table = tables[0] if tables else None
+        if first_table:
+            return WDMMergedTable(
+                text=first_table["text"],
+                page=[first_table["page"]],
+                source=first_table["source"],
+                bbox=[first_table["bbox"]],
+                headers=[get_headers_from_markdown(first_table["text"])],
+                n_rows=first_table["n_rows"],
+                n_columns=first_table["n_columns"],
+                context_before=first_table["context_before"],
+                image_paths=[first_table["image_path"]],
+            )
+        else:
+            # Emergency fallback
+            raise ValueError("Cannot merge tables: no valid tables provided")
 
 
 def full_pipeline(
@@ -1192,56 +1275,114 @@ def full_pipeline(
     credential_path: str = None,
 ) -> Union[List[WDMMergedTable], Tuple[List[WDMTable], List[WDMMergedTable]]]:
     merged_tables = []
+    all_tables = []  # Keep track of all extracted tables for return_full_tables
 
     # Convert single string to list if needed
     if isinstance(doc, str):
         doc = [doc]
 
-    for d in doc:
+    for doc_idx, d in enumerate(doc):
+        tables = []
         try:
+            # Validate input
             if isinstance(d, str):
-                # Validate file path
                 if not os.path.exists(d):
                     if debug:
                         logger.error(f"File not found: {d}")
                     continue
                 if debug:
-                    logger.info(f"Processing document: {get_pdf_name(d)}")
+                    logger.info(f"Processing document {doc_idx + 1}/{len(doc)}: {get_pdf_name(d)}")
             else:
                 if debug:
-                    logger.info(f"Processing document: {d.name}")
+                    logger.info(f"Processing document {doc_idx + 1}/{len(doc)}: {d.name}")
 
             if debug:
                 logger.info("   Extracting tables...")
-            # For full_pipeline (merge_span_tables=True), always use AI analysis
+            
+            # OPTIMIZED: Extract tables with enhanced error handling
             tables = get_tables_from_pdf(
                 d,
                 pages,
                 debug,
                 debug_level,
                 enrich,
-                use_ai_analysis=True,
+                use_ai_analysis=True,  # Always use AI analysis for full pipeline
                 credential_path=credential_path,
             )
-            if evaluate:
-                # bỏ đi table cuối cùng
+            
+            if evaluate and tables:
+                # Remove last table if in evaluation mode
                 tables = tables[:-1]
+                
+            if not tables:
+                if debug:
+                    logger.warning(f"   No tables found in document")
+                continue
+                
             if debug:
-                logger.info("   Finding spanned table groups...")
-            table_groups = find_spanned_table_groups(tables)
-            print_groups_summary(table_groups, debug)
+                logger.info(f"   Found {len(tables)} tables, finding spanned groups...")
+                
+            # OPTIMIZED: Find table groups with better error handling
+            try:
+                table_groups = find_spanned_table_groups(tables)
+                print_groups_summary(table_groups, debug)
+            except Exception as group_error:
+                if debug:
+                    logger.error(f"   Error finding table groups: {group_error}")
+                # Fallback: treat each table as individual group
+                table_groups = [[table] for table in tables]
+                
             if debug:
-                logger.info("   Merging tables...")
-            for group in table_groups:
-                merged_table = merge_tables(group, debug)
-                merged_tables.append(merged_table)
+                logger.info(f"   Merging {len(table_groups)} table groups...")
+                
+            # OPTIMIZED: Merge tables with progress tracking and error handling
+            for group_idx, group in enumerate(table_groups):
+                try:
+                    merged_table = merge_tables(group, debug)
+                    merged_tables.append(merged_table)
+                    
+                    if debug and len(table_groups) > 1:
+                        logger.info(f"   Merged group {group_idx + 1}/{len(table_groups)}")
+                        
+                except Exception as merge_error:
+                    if debug:
+                        logger.error(f"   Error merging group {group_idx + 1}: {merge_error}")
+                    # Fallback: add individual tables as separate merged tables
+                    for table in group:
+                        try:
+                            fallback_merged = merge_tables([table], debug)
+                            merged_tables.append(fallback_merged)
+                        except Exception:
+                            if debug:
+                                logger.error(f"   Failed to create fallback for table in group {group_idx + 1}")
+                            
+            # Store all extracted tables for potential return
+            all_tables.extend(tables)
+            
             if debug:
-                logger.info("   Done!")
-        except Exception as e:
+                logger.info(f"   Completed processing document: {len(merged_tables)} merged tables total")
+                
+        except Exception as doc_error:
             if debug:
-                logger.error(f"Error processing document: {str(e)}")
+                logger.error(f"Error processing document {doc_idx + 1}: {str(doc_error)}")
             continue
+        finally:
+            # OPTIMIZED: Memory cleanup after each document
+            if tables:
+                tables.clear()
+            # Force garbage collection for large documents
+            if doc_idx > 0 and (doc_idx + 1) % 5 == 0:  # Every 5 documents
+                import gc
+                gc.collect()
 
+    # Final summary
+    if debug:
+        logger.info(f"Pipeline completed: {len(merged_tables)} total merged tables from {len(doc)} documents")
+
+    # OPTIMIZED: Return based on flag with memory considerations
     if return_full_tables:
-        return tables, merged_tables
-    return merged_tables
+        return all_tables, merged_tables
+    else:
+        # Clean up all_tables if not needed
+        all_tables.clear()
+        return merged_tables
