@@ -15,6 +15,7 @@ from .WDMParser import (
     Enrich_VertexAI
 )
 from .vectorstore import VectorStore
+from .prompts import SYSTEM_MESSAGE, GENERATE_PROMPT
 
 __all__ = [
     "WDMPDFParser",
@@ -29,5 +30,7 @@ __all__ = [
     "print_credentials_help",
     "Enrich_Openrouter",
     "Enrich_VertexAI",
-    "VectorStore"
+    "VectorStore",
+    "SYSTEM_MESSAGE",
+    "GENERATE_PROMPT"
 ]

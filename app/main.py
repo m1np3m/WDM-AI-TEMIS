@@ -7,6 +7,9 @@ import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
+from langchain.chat_models import init_chat_model
+from langchain_core.prompts import PromptTemplate
+
 import streamlit as st
 from loguru import logger
 
@@ -16,6 +19,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.vectorstore import QdrantClientManager, VectorStore
 from src.file_loader import PDFLoader
+from src.prompts import SYSTEM_MESSAGE, GENERATE_PROMPT
 
 def cleanup_qdrant_clients():
     """Cleanup function to close all Qdrant clients on app shutdown."""
@@ -149,6 +153,27 @@ def process_pdfs_concurrent(pdf_files, credential_path=None, debug_mode=False, t
         'table_docs': table_docs,
         'total_time': total_time
     }
+
+def generate_response(source_list: str, prompt: str, context: str) -> str:
+    combined_prompt = SYSTEM_MESSAGE.format(source_list=source_list) + "\n\n" + GENERATE_PROMPT
+    
+    template = PromptTemplate(
+        input_variables=["context", "question"],
+        template=combined_prompt
+    )
+
+    llm = init_chat_model(
+        model_provider="google_vertexai",
+        model="gemini-2.0-flash",
+        temperature=0.0,
+    )    
+    
+    chain = template | llm
+    response = chain.invoke({
+        "context": context,
+        "question": prompt
+    })
+    return response
 
 # =================================================================================
 
@@ -457,12 +482,16 @@ def main():
                         
                         if docs:
                             with st.expander("📄 Source Documents", expanded=True):
+                                st.write(f"**Total Retrieved: {len(docs)} documents**")
+                                st.markdown("---")
+                                
                                 for i, doc in enumerate(docs, 1):
                                     source = doc.metadata.get('source', 'Unknown source')
+                                    page = doc.metadata.get('page', 'Unknown page')
                                     doc_type = doc.metadata.get('type', 'text')
                                     
-                                    # Show source info
-                                    st.write(f"**{i}. {source}**")
+                                    # Show source info with page
+                                    st.write(f"**{i}. {source}** (Page {page})")
                                     
                                     # Type badge
                                     if doc_type == 'table':
@@ -471,18 +500,71 @@ def main():
                                         st.markdown("📝 `TEXT`")
                                     
                                     # Content preview
-                                    preview = doc.page_content[:200] + "..." if len(doc.page_content) > 200 else doc.page_content
+                                    preview = doc.page_content[:300] + "..." if len(doc.page_content) > 300 else doc.page_content
                                     st.markdown(f"*{preview}*")
                                     
-                                    if i < len(docs[:5]):
+                                    if i < len(docs):
                                         st.markdown("---")
                             
-                            # Generate response
-                            context = "\n\n".join([doc.page_content for doc in docs[:3]])
-                            response = "[This is a placeholder response. Integrate with your LLM here]"
+                            # Generate response using LLM with ALL retrieved documents
+                            # Format context with clear separators for each document
+                            context_parts = []
+                            source_list = []
+                            
+                            for i, doc in enumerate(docs, 1):  # Use ALL documents, not just top 5
+                                source = doc.metadata.get('source', 'Unknown source')
+                                page = doc.metadata.get('page', 'Unknown page')
+                                doc_type = doc.metadata.get('type', 'text')
+                                
+                                # Create source list entry
+                                source_list.append(f"{i}. {source} (Page {page}, Type: {doc_type})")
+                                
+                                # Format document with clear header and separator
+                                doc_header = f"=== DOCUMENT {i} ===\nSource: {source}\nPage: {page}\nType: {doc_type.upper()}\n" + "="*50
+                                doc_content = doc.page_content.strip()
+                                doc_footer = f"{'='*50}\nEND OF DOCUMENT {i}\n{'='*50}"
+                                
+                                context_parts.append(f"{doc_header}\n\n{doc_content}\n\n{doc_footer}")
+                            
+                            # Join all documents with clear separators
+                            context = "\n\n".join(context_parts)
+                            source_list_str = "\n".join(source_list)
+                        
+                            # Generate response using the LLM
+                            with st.spinner("Generating response..."):
+                                try:
+                                    response = generate_response(
+                                        source_list=source_list_str,
+                                        prompt=prompt,
+                                        context=context
+                                    )
+                                    # Extract text content if response is a message object
+                                    if hasattr(response, 'content'):
+                                        response = response.content
+                                    elif not isinstance(response, str):
+                                        response = str(response)
+                                        
+                                except Exception as e:
+                                    logger.error(f"LLM generation error: {e}")
+                                    response = f"❌ Error generating response: {str(e)}"
                         else:
                             st.info("No relevant documents found for this query.")
-                            response = "I couldn't find relevant information in the knowledge base."
+                            # Still generate a response using LLM even without context
+                            with st.spinner("Generating response..."):
+                                try:
+                                    response = generate_response(
+                                        source_list="No specific documents found",
+                                        prompt=prompt,
+                                        context="No relevant context found in the knowledge base."
+                                    )
+                                    # Extract text content if response is a message object
+                                    if hasattr(response, 'content'):
+                                        response = response.content
+                                    elif not isinstance(response, str):
+                                        response = str(response)
+                                except Exception as e:
+                                    logger.error(f"LLM generation error: {e}")
+                                    response = f"❌ Error generating response: {str(e)}"
                         
                 except Exception as e:
                     logger.error(f"Retrieval error: {e}")
@@ -492,7 +574,22 @@ def main():
         else:
             with context_col:
                 st.info("📤 Upload PDF documents to start searching!")
-            response = "Please upload and process some PDF documents first to enable Q&A functionality."
+            # Generate response using LLM without context
+            with st.spinner("Generating response..."):
+                try:
+                    response = generate_response(
+                        source_list="No documents uploaded yet",
+                        prompt=prompt,
+                        context="No documents have been uploaded to the knowledge base yet."
+                    )
+                    # Extract text content if response is a message object
+                    if hasattr(response, 'content'):
+                        response = response.content
+                    elif not isinstance(response, str):
+                        response = str(response)
+                except Exception as e:
+                    logger.error(f"LLM generation error: {e}")
+                    response = f"❌ Error generating response: {str(e)}"
         
         # Add assistant response to messages
         st.session_state.messages.append({"role": "assistant", "content": response})
