@@ -457,7 +457,7 @@ def main():
                         
                         if docs:
                             with st.expander("📄 Source Documents", expanded=True):
-                                for i, doc in enumerate(docs[:5], 1):
+                                for i, doc in enumerate(docs, 1):
                                     source = doc.metadata.get('source', 'Unknown source')
                                     doc_type = doc.metadata.get('type', 'text')
                                     
@@ -479,7 +479,7 @@ def main():
                             
                             # Generate response
                             context = "\n\n".join([doc.page_content for doc in docs[:3]])
-                            response = f"Based on the documents, here are the relevant information:\n\n{context}\n\n*[This is a placeholder response. Integrate with your LLM here]*"
+                            response = "[This is a placeholder response. Integrate with your LLM here]"
                         else:
                             st.info("No relevant documents found for this query.")
                             response = "I couldn't find relevant information in the knowledge base."

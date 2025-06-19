@@ -164,20 +164,76 @@ class WDMPDFParser:
         ]
         return documents
 
-    def extract_text(self, pages: List[int] = None) -> List[Document]:
+    def _extract_text_ignoring_tables(self, page) -> str:
+        """
+        Extracts text from a page, ignoring any text inside detected tables.
+        Uses PyMuPDF's redaction method as recommended in GitHub Issue #2908.
+
+        Args:
+            page: A pymupdf.Page object.
+
+        Returns:
+            A string containing the page's text with table content removed.
+        """
+        try:
+            # 1. Find all tables on the page
+            tables = page.find_tables()
+
+            if self.debug and tables:
+                print(f"Found {len(tables)} tables on page {page.number + 1}")
+
+            # 2. Add a redaction annotation for each table's bounding box
+            for table in tables:
+                page.add_redact_annot(table.bbox)
+
+            # 3. Apply the redactions to erase the content
+            # The 'text' option ensures only text is removed, leaving graphics/images if needed
+            # Use 'images=0' to not touch images at all
+            page.apply_redactions(text="text", images=0)
+
+            # 4. Extract the remaining text from the page
+            text_without_tables = page.get_text()
+
+            return text_without_tables
+
+        except Exception as e:
+            if self.debug:
+                print(f"Warning: Could not remove tables from page {page.number + 1}: {e}")
+            # Fallback to regular text extraction if table detection fails
+            return page.get_text()
+
+    def extract_text(self, pages: List[int] = None, ignore_tables: bool = True) -> List[Document]:
+        """
+        Extract text from PDF pages, with option to ignore text within tables.
+
+        Args:
+            pages: List of page numbers to extract (1-indexed). If None, extracts all pages.
+            ignore_tables: If True, removes text content within detected tables.
+
+        Returns:
+            List of Document objects containing the extracted text.
+        """
         doc = pymupdf.open(self.file_path)
         if pages is None:
             pages = range(1, len(doc) + 1)
         all_text: List[WDMText] = []
-        
 
         for page_number in pages:
             page = doc[page_number - 1]
+            
+            if ignore_tables:
+                # Use redaction method to extract text while ignoring tables
+                text_content = self._extract_text_ignoring_tables(page)
+            else:
+                # Extract text normally without ignoring tables
+                text_content = page.get_text()
+                
             all_text.append(
                 WDMText(
-                    text=page.get_text(), page=page_number, source=self.file_path
+                    text=text_content, page=page_number, source=self.file_path
                 )
             )
+            
         doc.close()
         documents: List[Document] = [
             Document(
