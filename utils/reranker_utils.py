@@ -16,7 +16,7 @@ mxbai = Mixedbread(api_key=os.getenv("MXBAI_API_KEY"))
 
 # === Cohere ===
 import cohere
-co = cohere.Client(os.getenv("COHERE_API_KEY"))
+co = cohere.Client(os.getenv("COHERE_KEY"))
 
 # === BCE ===
 from BCEmbedding import RerankerModel
@@ -149,6 +149,16 @@ class Reranker:
             return [doc for doc, _ in ranked[:top_k]]
         except Exception as e:
             print(f"[ST CrossEncoder Reranker] Error: {e}")
+            return documents[:top_k]
+        
+    def bge_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
+        try:
+            pairs = [[query, doc] for doc in documents]
+            scores = colbert_model.compute_score(pairs, normalize=True)
+            ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
+            return [doc for doc, _ in ranked[:top_k]]
+        except Exception as e:
+            print(f"[BGE Reranker] Error: {e}")
             return documents[:top_k]
 
 if __name__ == 'main':

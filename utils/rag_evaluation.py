@@ -28,13 +28,14 @@ def run_ragas_eval(
     embedding_model_name,
     response_generation_function = "",
     num_docs=5,
+    reranker_function=None,
     path="ragas_eval.csv"
 ):
     eval_df = eval_df.rename(columns={"question": "input", "answer": "ground_truth", "context": "reference_contexts"})
     print("Running Context Retrieve...")
 
     eval_df['contexts'] = eval_df['input'].apply(
-        lambda q: doc_retrieval_function(collection_name, q, embedding_model_name, num_documents=num_docs)
+        lambda q: doc_retrieval_function(collection_name, q, embedding_model_name, num_documents=num_docs, reranker = reranker_function)
     )
     eval_df["reference_contexts"] = eval_df["reference_contexts"].apply(lambda x: [x] if isinstance(x, str) else x)
 

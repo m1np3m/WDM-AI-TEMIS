@@ -153,14 +153,17 @@ class QdrantRAG:
         vectorstore.add_texts(texts=docs_contents, metadatas=docs_metadatas)
 
 
-    def get_documents(self, collection_name, query, embedding_model, num_documents=5):
+    def get_documents(self, collection_name, query, embedding_model, num_documents=5, reranker = None):
         self.client.set_model(embedding_model_name=embedding_model)
         search_results = self.client.query(
             collection_name=collection_name,
             query_text=query,
             limit=num_documents,
         )
-        return [r.metadata['document'] for r in search_results]
+        documents = [r.metadata['document'] for r in search_results]
+        if reranker:
+            documents = reranker.rerank(query, documents, top_k=num_documents)
+        return documents[:num_documents]
 
     def get_documents_gemini(self, collection_name, query, embedding_model="models/embedding-001", num_documents=5):
         embedding_model = GoogleGenerativeAIEmbeddings(
@@ -196,7 +199,7 @@ class QdrantRAG:
 
 
         if reranker:
-            documents = reranker(query, documents, top_k=num_documents)
+            documents = reranker.rerank(query, documents, top_k=num_documents)
 
         return documents[:num_documents]
 

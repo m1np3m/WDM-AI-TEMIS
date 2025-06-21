@@ -4,7 +4,7 @@ import json
 from dotenv import load_dotenv, find_dotenv
 import os
 import json
-
+import re
 import pandas as pd
 import qdrant_client
 from qdrant_client.models import VectorParams, Distance
