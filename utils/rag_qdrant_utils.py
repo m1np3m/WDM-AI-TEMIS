@@ -5,7 +5,7 @@ import torch
 
 from langchain.vectorstores import Qdrant
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.text_splitter import (
     RecursiveCharacterTextSplitter,
     CharacterTextSplitter,
