@@ -2,9 +2,21 @@
 
 import os
 import time
-import requests
-
 from typing import Callable, List, Optional
+
+import requests
+import torch
+
+
+def get_device():
+    if torch.cuda.is_available():
+        return "cuda"
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        return "mps"  # Apple Silicon
+    else:
+        return "cpu"
+
+DEVICE = get_device()
 
 # === Jina ===
 JINA_MODEL = "jina-colbert-v1-en"
@@ -12,30 +24,36 @@ JINA_URL = "https://api.jina.ai/v1/rerank"
 
 # === Mixedbread ===
 from mixedbread import Mixedbread
+
 mxbai = Mixedbread(api_key=os.getenv("MXBAI_API_KEY"))
 
 # === Cohere ===
 import cohere
+
 co = cohere.Client(os.getenv("COHERE_KEY"))
 
 # === BCE ===
 from BCEmbedding import RerankerModel
-bce_model = RerankerModel("maidalun1020/bce-reranker-base_v1", use_fp16=True, device="cuda")
+
+bce_model = RerankerModel("maidalun1020/bce-reranker-base_v1", use_fp16=True, device=DEVICE)
 
 # === FlagEmbedding ColBERT ===
 from FlagEmbedding import FlagAutoReranker
+
 colbert_model = FlagAutoReranker.from_finetuned(
     model_name_or_path="BAAI/bge-reranker-v2-minicpm-layerwise",
     max_length=512,
-    devices='cuda'
+    devices=DEVICE
 )
 
 # === Flashrank ===
 from flashrank import Ranker, RerankRequest
+
 flashrank_model = Ranker(model_name="ms-marco-MiniLM-L-12-v2", max_length=512)
 
 # === Sentence Transformers ===
 from sentence_transformers import CrossEncoder
+
 st_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
 
