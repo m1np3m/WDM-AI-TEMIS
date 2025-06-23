@@ -6,9 +6,10 @@ import asyncio
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
-
+from typing import List
 from langchain.chat_models import init_chat_model
 from langchain_core.prompts import PromptTemplate
+from langchain_core.documents import Document
 
 import streamlit as st
 from loguru import logger
@@ -153,8 +154,34 @@ def process_pdfs_concurrent(pdf_files, credential_path=None, debug_mode=False, t
         'table_docs': table_docs,
         'total_time': total_time
     }
+    
+def prepare_context(docs: List[Document]) -> str:
+    context_parts = ["<documents>"]
+    
+    # 2. Dùng thẻ XML để cấu trúc hóa từng tài liệu
+    for i, doc in enumerate(docs, 1):
+        # Mở thẻ cho tài liệu
+        doc_str = f'\n<document index="{i}">'
+        
+        # 3. Định dạng metadata rõ ràng
+        doc_str += "\n  <metadata>"
+        for key, value in doc.metadata.items():
+            doc_str += f"\n    <{key}>{value}</{key}>"
+        doc_str += "\n  </metadata>"
+        
+        # Thêm nội dung chính
+        doc_str += f"\n  <content>\n{doc.page_content}\n  </content>"
+        
+        # Đóng thẻ tài liệu
+        doc_str += "\n</document>"
+        
+        context_parts.append(doc_str)
+        
+    context_parts.append("\n</documents>")
+    
+    return "".join(context_parts)
 
-def generate_response(source_list: str, prompt: str, context: str) -> str:
+def generate_response(prompt: str, context: str) -> str:
     # combined_prompt = SYSTEM_MESSAGE.format(source_list=source_list) + "\n\n" + GENERATE_PROMPT
     combined_prompt = GENERATE_PROMPT
     template = PromptTemplate(
@@ -165,7 +192,7 @@ def generate_response(source_list: str, prompt: str, context: str) -> str:
     llm = init_chat_model(
         model_provider="google_vertexai",
         model="gemini-2.0-flash",
-        temperature=0.0,
+        temperature=0.3,  # Increased for more natural responses
     )    
     
     chain = template | llm
@@ -508,39 +535,11 @@ def main():
                             
                             # Generate response using LLM with ALL retrieved documents
                             # Format context with clear separators for each document
-                            context_parts = []
-                            source_list = []
-                            
-                            for i, doc in enumerate(docs, 1):  # Use ALL documents, not just top 5
-                                source = doc.metadata.get('source', 'Unknown source')
-                                page = doc.metadata.get('page', 'Unknown page')
-                                doc_type = doc.metadata.get('type', 'text')
-                                
-                                # Create source list entry with basic info
-                                source_list.append(f"{i}. {source} (Page {page}, Type: {doc_type})")
-                                
-                                # Format all metadata for LLM context
-                                metadata_lines = []
-                                for key, value in doc.metadata.items():
-                                    metadata_lines.append(f"{key.title()}: {value}")
-                                metadata_str = "\n".join(metadata_lines)
-                                
-                                # Format document with clear header including all metadata
-                                doc_header = f"=== DOCUMENT {i} ===\nMETADATA:\n{metadata_str}\n" + "="*50
-                                doc_content = doc.page_content.strip()
-                                doc_footer = f"{'='*50}\nEND OF DOCUMENT {i}\n{'='*50}"
-                                
-                                context_parts.append(f"{doc_header}\n\n{doc_content}\n\n{doc_footer}")
-                            
-                            # Join all documents with clear separators
-                            context = "\n\n".join(context_parts)
-                            source_list_str = "\n".join(source_list)
-                        
+                            context = prepare_context(docs)
                             # Generate response using the LLM
                             with st.spinner("Generating response..."):
                                 try:
                                     response = generate_response(
-                                        source_list=source_list_str,
                                         prompt=prompt,
                                         context=context
                                     )
@@ -559,7 +558,6 @@ def main():
                             with st.spinner("Generating response..."):
                                 try:
                                     response = generate_response(
-                                        source_list="No specific documents found",
                                         prompt=prompt,
                                         context="No relevant context found in the knowledge base."
                                     )
@@ -584,7 +582,6 @@ def main():
             with st.spinner("Generating response..."):
                 try:
                     response = generate_response(
-                        source_list="No documents uploaded yet",
                         prompt=prompt,
                         context="No documents have been uploaded to the knowledge base yet."
                     )
