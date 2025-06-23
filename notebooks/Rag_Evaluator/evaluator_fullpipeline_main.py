@@ -399,64 +399,64 @@ exp_hybrid = QdrantRAG(client=client)
 #     reranker_function=reranker
 # )
 
-experiment_jina = pd.read_csv(
-    "notebooks/Rag_Evaluator/experiment_hybrid_512_128_bge-base-en_character_7_jina_gemma.csv"
-)
+# experiment_jina = pd.read_csv(
+#     "notebooks/Rag_Evaluator/experiment_hybrid_512_128_bge-base-en_character_7_jina_gemma.csv"
+# )
 
 
-reranker = Reranker(method="mixedbread")
-experiment_mixbread = run_ragas_eval(
-    eval_df=eval_df,
-    collection_name=COLLECTION_NAME,
-    doc_retrieval_function=lambda collection,
-    query,
-    embedding_model,
-    num_documents,
-    reranker: exp_hybrid.get_documents_hybrid(
-        collection_name=collection,
-        query=query,
-        embedding_model_name=embedding_model,
-        num_documents=num_documents,
-        reranker=reranker,
-        retrieval_k=num_documents * 3,
-    ),
-    num_docs=num_docs,
-    embedding_model_name=embedding_model_name,
-    path=f"{COLLECTION_NAME}_{num_docs}_mixedbread_gemma.csv",
-    reranker_function=reranker,
-)
+# reranker = Reranker(method="mixedbread")
+# experiment_mixbread = run_ragas_eval(
+#     eval_df=eval_df,
+#     collection_name=COLLECTION_NAME,
+#     doc_retrieval_function=lambda collection,
+#     query,
+#     embedding_model,
+#     num_documents,
+#     reranker: exp_hybrid.get_documents_hybrid(
+#         collection_name=collection,
+#         query=query,
+#         embedding_model_name=embedding_model,
+#         num_documents=num_documents,
+#         reranker=reranker,
+#         retrieval_k=num_documents * 3,
+#     ),
+#     num_docs=num_docs,
+#     embedding_model_name=embedding_model_name,
+#     path=f"{COLLECTION_NAME}_{num_docs}_mixedbread_gemma.csv",
+#     reranker_function=reranker,
+# )
 
-reranker = Reranker(method="cohere")
+# reranker = Reranker(method="cohere")
 
-experiment_cohere = run_ragas_eval(
-    eval_df=eval_df,
-    collection_name=COLLECTION_NAME,
-    doc_retrieval_function=lambda collection,
-    query,
-    embedding_model,
-    num_documents,
-    reranker: exp_hybrid.get_documents_hybrid(
-        collection_name=collection,
-        query=query,
-        embedding_model_name=embedding_model,
-        num_documents=num_documents,
-        reranker=reranker,
-        retrieval_k=num_documents * 3,
-    ),
-    num_docs=num_docs,
-    embedding_model_name=embedding_model_name,
-    path=f"{COLLECTION_NAME}_{num_docs}_cohere_gemma.csv",
-    reranker_function=reranker,
-)
+# experiment_cohere = run_ragas_eval(
+#     eval_df=eval_df,
+#     collection_name=COLLECTION_NAME,
+#     doc_retrieval_function=lambda collection,
+#     query,
+#     embedding_model,
+#     num_documents,
+#     reranker: exp_hybrid.get_documents_hybrid(
+#         collection_name=collection,
+#         query=query,
+#         embedding_model_name=embedding_model,
+#         num_documents=num_documents,
+#         reranker=reranker,
+#         retrieval_k=num_documents * 3,
+#     ),
+#     num_docs=num_docs,
+#     embedding_model_name=embedding_model_name,
+#     path=f"{COLLECTION_NAME}_{num_docs}_cohere_gemma.csv",
+#     reranker_function=reranker,
+# )
 
-experiment_names = [
-    "Exp 1: jina, gte-base, Gemini",
-    "Exp 2: mixbread, gte-base, Gemini",
-    "Exp 3: cohere, gte-base, Gemini",
-]
-metrics_to_plot = ["context_precision", "context_recall", "hit_rate", "mrr"]
+# experiment_names = [
+#     "Exp 1: jina, gte-base, Gemini",
+#     "Exp 2: mixbread, gte-base, Gemini",
+#     "Exp 3: cohere, gte-base, Gemini",
+# ]
+# metrics_to_plot = ["context_precision", "context_recall", "hit_rate", "mrr"]
 
-# plot_experiment_comparison([experiment_jina, experiment_mixbread, experiment_cohere], experiment_names, metrics_to_plot)
+# # plot_experiment_comparison([experiment_jina, experiment_mixbread, experiment_cohere], experiment_names, metrics_to_plot)
 
 """##### **Using Open source Reranker**"""
 
