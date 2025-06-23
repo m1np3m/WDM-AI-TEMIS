@@ -155,8 +155,8 @@ def process_pdfs_concurrent(pdf_files, credential_path=None, debug_mode=False, t
     }
 
 def generate_response(source_list: str, prompt: str, context: str) -> str:
-    combined_prompt = SYSTEM_MESSAGE.format(source_list=source_list) + "\n\n" + GENERATE_PROMPT
-    
+    # combined_prompt = SYSTEM_MESSAGE.format(source_list=source_list) + "\n\n" + GENERATE_PROMPT
+    combined_prompt = GENERATE_PROMPT
     template = PromptTemplate(
         input_variables=["context", "question"],
         template=combined_prompt
@@ -516,11 +516,17 @@ def main():
                                 page = doc.metadata.get('page', 'Unknown page')
                                 doc_type = doc.metadata.get('type', 'text')
                                 
-                                # Create source list entry
+                                # Create source list entry with basic info
                                 source_list.append(f"{i}. {source} (Page {page}, Type: {doc_type})")
                                 
-                                # Format document with clear header and separator
-                                doc_header = f"=== DOCUMENT {i} ===\nSource: {source}\nPage: {page}\nType: {doc_type.upper()}\n" + "="*50
+                                # Format all metadata for LLM context
+                                metadata_lines = []
+                                for key, value in doc.metadata.items():
+                                    metadata_lines.append(f"{key.title()}: {value}")
+                                metadata_str = "\n".join(metadata_lines)
+                                
+                                # Format document with clear header including all metadata
+                                doc_header = f"=== DOCUMENT {i} ===\nMETADATA:\n{metadata_str}\n" + "="*50
                                 doc_content = doc.page_content.strip()
                                 doc_footer = f"{'='*50}\nEND OF DOCUMENT {i}\n{'='*50}"
                                 
