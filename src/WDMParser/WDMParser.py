@@ -7,6 +7,7 @@ from typing import List, Tuple, TypedDict
 import pandas as pd
 import pymupdf
 from langchain_core.documents import Document
+from loguru import logger
 from markdown import markdown
 
 from .extract_tables import WDMMergedTable, WDMTable, full_pipeline, get_tables_from_pdf
@@ -167,6 +168,7 @@ class WDMPDFParser:
     def extract_text(self, pages: List[int] = None, ignore_tables: bool = True) -> List[Document]:
         """
         Extract text from PDF pages, with option to ignore text within tables.
+        Uses fallback mechanism: if ignore_tables=True fails, retry with ignore_tables=False.
 
         Args:
             pages: List of page numbers to extract (1-indexed). If None, extracts all pages.
@@ -175,28 +177,82 @@ class WDMPDFParser:
         Returns:
             List of Document objects containing the extracted text.
         """
+        # First attempt with ignore_tables setting
+        try:
+            return self._extract_text_internal(pages, ignore_tables)
+        except Exception as e:
+            if ignore_tables:
+                logger.warning(f"Text extraction with ignore_tables=True failed: {e}")
+                logger.info("Retrying with ignore_tables=False (fallback mode)")
+                try:
+                    return self._extract_text_internal(pages, ignore_tables=False)
+                except Exception as fallback_error:
+                    logger.error(f"Both text extraction methods failed: {fallback_error}")
+                    return []
+            else:
+                logger.error(f"Text extraction failed: {e}")
+                return []
+
+    def _extract_text_internal(self, pages: List[int] = None, ignore_tables: bool = True) -> List[Document]:
+        """
+        Internal method to extract text from PDF pages.
+        """
         doc = pymupdf.open(self.file_path)
         if pages is None:
-            pages = range(1, len(doc) + 1)
+            pages = list(range(1, len(doc) + 1))
         all_text: List[WDMText] = []
 
-        for page_number, page in zip(pages, doc):
-                
-            for tab in page.find_tables(strategy = "lines_strict"):
-                # process the content of table 'tab'
-                page.add_redact_annot(tab.bbox)  # wrap table in a redaction annotation
-                
-            page.apply_redactions()
-            text_content = page.get_text()
-                
-            all_text.append(
-                WDMText(
-                    text=text_content, page=page_number, source=self.file_path
-                )
-            )
-
+        try:
+            for page_number in pages:
+                try:
+                    # Convert 1-indexed page number to 0-indexed for PyMuPDF
+                    page = doc[page_number - 1]
+                    
+                    if ignore_tables:
+                        # Find tables and create redaction annotations
+                        table_bboxes = []
+                        for tab in page.find_tables(strategy="lines_strict"):
+                            table_bboxes.append(tab.bbox)
+                            page.add_redact_annot(tab.bbox)
+                        
+                        # Only apply redactions if we found tables
+                        if table_bboxes:
+                            page.apply_redactions()
+                    
+                    # Extract text content
+                    text_content = page.get_text()
+                    
+                    all_text.append(
+                        WDMText(
+                            text=text_content, 
+                            page=page_number, 
+                            source=self.file_path
+                        )
+                    )
+                    
+                    if self.debug:
+                        char_count = len(text_content.strip())
+                        mode = "with table redaction" if ignore_tables else "without table redaction"
+                        logger.info(f"Extracted text from page {page_number} ({mode}): {char_count} characters")
+                        
+                except Exception as e:
+                    # If we're in ignore_tables mode and get an error, raise it to trigger fallback
+                    if ignore_tables and ("not a textpage" in str(e) or "textpage" in str(e)):
+                        raise e
+                    
+                    logger.warning(f"Failed to extract text from page {page_number}: {e}")
+                    # Continue with empty text for this page
+                    all_text.append(
+                        WDMText(
+                            text="", 
+                            page=page_number, 
+                            source=self.file_path
+                        )
+                    )
+                    
+        finally:
+            doc.close()
             
-        doc.close()
         documents: List[Document] = [
             Document(
                 page_content=text["text"],
@@ -207,7 +263,13 @@ class WDMPDFParser:
                 },
             )
             for text in all_text
+            if text["text"].strip()  # Only include pages with actual text content
         ]
+        
+        if self.debug:
+            mode = "with table redaction" if ignore_tables else "without table redaction"
+            logger.info(f"Successfully extracted {len(documents)} text documents ({mode})")
+            
         return documents
     
     
