@@ -180,31 +180,21 @@ class WDMPDFParser:
             pages = range(1, len(doc) + 1)
         all_text: List[WDMText] = []
 
-        for page_number in pages:
-            try:
-                page = doc[page_number - 1]
+        for page_number, page in zip(pages, doc):
                 
-                if ignore_tables:
-                    # Use redaction method to extract text while ignoring tables
-                    for tab in page.find_tables():
-                        page.add_redact_annot(tab.bbox)
-                    
-                    page.apply_redactions()
-                    text_content = page.get_text()
-                else:
-                    # Extract text normally without ignoring tables
-                    text_content = page.get_text()
-                    
-                all_text.append(
-                    WDMText(
-                        text=text_content, page=page_number, source=self.file_path
-                    )
+            for tab in page.find_tables(strategy = "lines_strict"):
+                # process the content of table 'tab'
+                page.add_redact_annot(tab.bbox)  # wrap table in a redaction annotation
+                
+            page.apply_redactions()
+            text_content = page.get_text()
+                
+            all_text.append(
+                WDMText(
+                    text=text_content, page=page_number, source=self.file_path
                 )
-            except Exception as e:
-                if self.debug:
-                    print(f"⚠️ Warning: Failed to extract text from page {page_number}: {str(e)}")
-                # Continue with other pages instead of failing completely
-                continue
+            )
+
             
         doc.close()
         documents: List[Document] = [
