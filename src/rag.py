@@ -1,10 +1,13 @@
 import time
 import asyncio
 import atexit
-from typing import List
+import logging
+from typing import List, Optional
 import os
 
 from langchain_core.documents import Document
+from langchain.output_parsers import PydanticOutputParser
+from pydantic import BaseModel, Field
 from loguru import logger
 
 from .file_loader import PDFLoader
@@ -175,8 +178,14 @@ class RAG:
     def retrieve_documents(
         self,
         query: str,
+        filter_sources: Optional[List[str]] = None,
+        filter_types: Optional[List[str]] = None,
     ):
-        return self.vectorstore.retriever.invoke(query)
+        return self.vectorstore.retrieve_documents(
+            query=query,
+            filter_sources=filter_sources,
+            filter_types=filter_types
+        )
 
     def clear_vectorstore(self):
         self.vectorstore.clear_vectorstore()
@@ -186,6 +195,141 @@ class RAG:
 
     def get_vectorstore(self):
         return self.vectorstore
+
+    def query_analysis(self, query: str, available_sources: Optional[List[str]] = None, 
+                      available_types: Optional[List[str]] = ["text", "table"]):
+        """
+        Analyze query and return relevant sources and types
+        
+        Args:
+            query (str): User input query
+            available_sources (Optional[List[str]]): List of available sources to filter against
+            available_types (Optional[List[str]]): List of available types to filter against
+            
+        Returns:
+            QueryAnalysis: Object containing analysis information
+            
+        Raises:
+            ValueError: When unable to parse results
+            Exception: Other errors from LLM
+        """
+        
+        class QueryAnalysis(BaseModel):
+            """Schema for query analysis results"""
+            sources: List[str] = Field(
+                description="List of sources relevant to the query",
+                example=["document1.pdf", "report2024.docx"]
+            )
+            types: List[str] = Field(
+                description="List of types relevant to the query", 
+                example=["report", "manual", "specification"]
+            )
+            # pages: Optional[List[int]] = Field(
+            #     description="List of pages relevant to the query (if any)",
+            #     default=None,
+            #     example=[1, 5, 10]
+            # )
+            confidence_score: Optional[float] = Field(
+                description="Confidence level of the analysis (0-1)",
+                default=None,
+                ge=0.0,
+                le=1.0
+            )
+            reasoning: Optional[str] = Field(
+                description="Reasoning for why these sources/types were selected",
+                default=None
+            )
+        
+        parser = PydanticOutputParser(pydantic_object=QueryAnalysis)
+        
+        try:
+            llm = ChatVertexAI(
+                model_name="gemini-2.0-flash",
+                temperature=0.1,  # Lower temperature for more stable results
+                max_tokens=1024,  # Limit tokens to avoid overly long responses
+            )
+            
+            # Create context about available sources/types if provided
+            context_info = ""
+            if available_sources:
+                context_info += f"\nAvailable sources: {', '.join(available_sources)}"
+            if available_types:
+                context_info += f"\nAvailable types: {', '.join(available_types)}"
+            
+            template = """
+            You are an expert document analyst. Your task is to analyze the user query and determine which document sources and types are most relevant.
+            
+            Guidelines:
+            - Only suggest sources and types that actually exist in the document collection
+            - Be specific and relevant to the query content
+            - Provide reasoning for your choices
+            - If uncertain, indicate lower confidence score
+            - DO NOT return any page numbers - focus only on sources and types
+            - For sources, you can suggest partial filenames (without extensions) if the user refers to them that way
+            
+            User Query: {query}
+            {context_info}
+            
+            {format_instructions}
+            
+            Important: Return only valid JSON format as specified above. Do not include pages in your response.
+            """
+            
+            prompt_template = PromptTemplate(
+                template=template,
+                input_variables=["query", "context_info"],
+                partial_variables={"format_instructions": parser.get_format_instructions()},
+            )
+            
+            # Create chain
+            chain = prompt_template | llm | parser
+            
+            # Invoke with error handling
+            response = chain.invoke({
+                "query": query,
+                "context_info": context_info
+            })
+            
+            # Validate and filter results with improved source matching
+            if available_sources:
+                filtered_sources = []
+                for suggested_source in response.sources:
+                    # Check for exact match first
+                    if suggested_source in available_sources:
+                        filtered_sources.append(suggested_source)
+                    else:
+                        # Check for partial match (filename without extension)
+                        for available_source in available_sources:
+                            # Remove extension from available source for comparison
+                            available_name = available_source.rsplit('.', 1)[0] if '.' in available_source else available_source
+                            suggested_name = suggested_source.rsplit('.', 1)[0] if '.' in suggested_source else suggested_source
+                            
+                            # Check if suggested name matches available name (case insensitive)
+                            if suggested_name.lower() == available_name.lower():
+                                filtered_sources.append(available_source)
+                                break
+                            # Also check if suggested name is contained in available name
+                            elif suggested_name.lower() in available_name.lower() or available_name.lower() in suggested_name.lower():
+                                filtered_sources.append(available_source)
+                                break
+                
+                response.sources = list(set(filtered_sources))  # Remove duplicates
+            
+            if available_types:
+                # Filter only available types
+                response.types = [t for t in response.types if t in available_types]
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error in query_analysis: {str(e)}")
+            # Return default result when error occurs
+            return QueryAnalysis(
+                sources=[],
+                types=[],
+                confidence_score=0.0,
+                reasoning=f"Error occurred during analysis: {str(e)}"
+            )
 
     def prepare_context(self, docs: List[Document]) -> str:
         context_parts = ["<documents>"]
@@ -226,8 +370,22 @@ class RAG:
         })
         return response
     
-    def __call__(self, query: str) -> dict:
-        docs = self.retrieve_documents(query)
+    def __call__(self, query: str, filter: bool = True) -> dict:
+        analysis = self.query_analysis(query, available_sources=self.get_unique_sources(), available_types=["text", "table"])
+        
+        # Apply filtering based on analysis if filter is enabled
+        if filter and analysis:
+            filter_sources = analysis.sources if analysis.sources else None
+            filter_types = analysis.types if analysis.types else None
+        else:
+            filter_sources = None
+            filter_types = None
+        
+        docs = self.retrieve_documents(
+            query=query,
+            filter_sources=filter_sources,
+            filter_types=filter_types
+        )
         context = self.prepare_context(docs)
         response = self.generate_response(query, context)
         
@@ -236,6 +394,7 @@ class RAG:
             "context": context,
             "docs": docs,
             "query": query,
+            "analysis": analysis,
         }
         
         

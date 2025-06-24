@@ -409,6 +409,9 @@ def main():
                         context = rag_result["context"] 
                         response = rag_result["response"]
                         query = rag_result["query"]
+                        analysis = rag_result["analysis"]
+                        
+                        print(analysis)
                         
                         # Extract text content if response is a message object
                         if hasattr(response, 'content'):

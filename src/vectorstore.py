@@ -357,6 +357,91 @@ class VectorStore:
             logger.error(f"Error adding documents to vectorstore: {e}")
             raise
 
+    def retrieve_documents(
+        self,
+        query: str,
+        filter_sources: Optional[List[str]] = None,
+        filter_types: Optional[List[str]] = None,
+    ):
+        """
+        Retrieve documents with optional filtering by sources and types
+        
+        Args:
+            query (str): Search query
+            filter_sources (Optional[List[str]]): Filter by specific sources
+            filter_types (Optional[List[str]]): Filter by specific types
+            
+        Returns:
+            List of retrieved documents
+        """
+        if self.retriever is None:
+            raise ValueError("Retriever not initialized.")
+        
+        # Build filter conditions
+        filter_conditions = []
+        
+        if filter_sources:
+            # Create OR condition for sources
+            source_conditions = [
+                models.FieldCondition(
+                    key="metadata.source",
+                    match=models.MatchValue(value=source)
+                )
+                for source in filter_sources
+            ]
+            if len(source_conditions) == 1:
+                filter_conditions.append(source_conditions[0])
+            else:
+                filter_conditions.append(
+                    models.Filter(
+                        should=source_conditions
+                    )
+                )
+        
+        if filter_types:
+            # Create OR condition for types  
+            type_conditions = [
+                models.FieldCondition(
+                    key="metadata.type",
+                    match=models.MatchValue(value=type_val)
+                )
+                for type_val in filter_types
+            ]
+            if len(type_conditions) == 1:
+                filter_conditions.append(type_conditions[0])
+            else:
+                filter_conditions.append(
+                    models.Filter(
+                        should=type_conditions
+                    )
+                )
+        
+        # Combine all conditions with AND
+        if filter_conditions:
+            if len(filter_conditions) == 1:
+                final_filter = filter_conditions[0]
+            else:
+                final_filter = models.Filter(
+                    must=filter_conditions
+                )
+            
+            # Use vectorstore search with filter
+            try:
+                results = self.vectorstore.similarity_search(
+                    query=query,
+                    k=K,
+                    filter=final_filter
+                )
+                logger.info(f"Retrieved {len(results)} documents with filters - sources: {filter_sources}, types: {filter_types}")
+                return results
+            except Exception as e:
+                logger.warning(f"Error with filtered search, falling back to unfiltered: {e}")
+                # Fallback to unfiltered search
+                return self.retriever.invoke(query)
+        else:
+            # No filters, use normal retrieval
+            return self.retriever.invoke(query)
+
     def get_unique_sources(self) -> List[str]:
         """return self.sources"""
         return sorted(list(self.sources)) if self.sources else ["No sources available"]
