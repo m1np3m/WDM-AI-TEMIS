@@ -11,7 +11,7 @@ from loguru import logger
 from markdown import markdown
 
 from .extract_tables import WDMMergedTable, WDMTable, full_pipeline, get_tables_from_pdf
-
+from ..setting import IGNORE_TABLES
 
 def convert_markdown_to_df(markdown_text: str) -> pd.DataFrame:
     try:
@@ -165,27 +165,26 @@ class WDMPDFParser:
         ]
         return documents
 
-    def extract_text(self, pages: List[int] = None, ignore_tables: bool = True) -> List[Document]:
+    def extract_text(self, pages: List[int] = None) -> List[Document]:
         """
         Extract text from PDF pages, with option to ignore text within tables.
-        Uses fallback mechanism: if ignore_tables=True fails, retry with ignore_tables=False.
+        Uses fallback mechanism: if IGNORE_TABLES=True fails, retry with IGNORE_TABLES=False.
 
         Args:
             pages: List of page numbers to extract (1-indexed). If None, extracts all pages.
-            ignore_tables: If True, removes text content within detected tables.
 
         Returns:
             List of Document objects containing the extracted text.
         """
         # First attempt with ignore_tables setting
         try:
-            return self._extract_text_internal(pages, ignore_tables)
+            return self._extract_text_internal(pages)
         except Exception as e:
-            if ignore_tables:
+            if IGNORE_TABLES:
                 logger.warning(f"Text extraction with ignore_tables=True failed: {e}")
                 logger.info("Retrying with ignore_tables=False (fallback mode)")
                 try:
-                    return self._extract_text_internal(pages, ignore_tables=False)
+                    return self._extract_text_internal(pages)
                 except Exception as fallback_error:
                     logger.error(f"Both text extraction methods failed: {fallback_error}")
                     return []
@@ -193,7 +192,7 @@ class WDMPDFParser:
                 logger.error(f"Text extraction failed: {e}")
                 return []
 
-    def _extract_text_internal(self, pages: List[int] = None, ignore_tables: bool = True) -> List[Document]:
+    def _extract_text_internal(self, pages: List[int] = None) -> List[Document]:
         """
         Internal method to extract text from PDF pages.
         """
@@ -208,7 +207,7 @@ class WDMPDFParser:
                     # Convert 1-indexed page number to 0-indexed for PyMuPDF
                     page = doc[page_number - 1]
                     
-                    if ignore_tables:
+                    if IGNORE_TABLES:
                         # Find tables and create redaction annotations
                         table_bboxes = []
                         for tab in page.find_tables(strategy="lines_strict"):
@@ -232,12 +231,12 @@ class WDMPDFParser:
                     
                     if self.debug:
                         char_count = len(text_content.strip())
-                        mode = "with table redaction" if ignore_tables else "without table redaction"
+                        mode = "with table redaction" if IGNORE_TABLES else "without table redaction"
                         logger.info(f"Extracted text from page {page_number} ({mode}): {char_count} characters")
                         
                 except Exception as e:
                     # If we're in ignore_tables mode and get an error, raise it to trigger fallback
-                    if ignore_tables and ("not a textpage" in str(e) or "textpage" in str(e)):
+                    if IGNORE_TABLES and ("not a textpage" in str(e) or "textpage" in str(e)):
                         raise e
                     
                     logger.warning(f"Failed to extract text from page {page_number}: {e}")
@@ -267,7 +266,7 @@ class WDMPDFParser:
         ]
         
         if self.debug:
-            mode = "with table redaction" if ignore_tables else "without table redaction"
+            mode = "with table redaction" if IGNORE_TABLES else "without table redaction"
             logger.info(f"Successfully extracted {len(documents)} text documents ({mode})")
             
         return documents

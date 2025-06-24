@@ -1,20 +1,21 @@
-import time
 import asyncio
 import atexit
 import logging
-from typing import List, Optional
 import os
+import time
+from typing import List, Optional
 
-from langchain_core.documents import Document
 from langchain.output_parsers import PydanticOutputParser
-from pydantic import BaseModel, Field
-from loguru import logger
-
-from .file_loader import PDFLoader
-from .vectorstore import VectorStore, QdrantClientManager
-from .prompts import GENERATE_PROMPT
+from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate
 from langchain_google_vertexai import ChatVertexAI
+from loguru import logger
+from pydantic import BaseModel, Field
+
+from .file_loader import PDFLoader
+from .prompts import GENERATE_PROMPT
+from .vectorstore import QdrantClientManager, VectorStore
+
 
 def cleanup_qdrant_clients():
     """Cleanup function to close all Qdrant clients on app shutdown."""
@@ -24,8 +25,10 @@ def cleanup_qdrant_clients():
     except Exception as e:
         logger.warning(f"Error during Qdrant cleanup: {e}")
 
+
 # Register cleanup function
 atexit.register(cleanup_qdrant_clients)
+
 
 class RAG:
     def __init__(
@@ -74,36 +77,43 @@ class RAG:
         start_time = time.time()
         try:
             logger.info(f"Starting processing {pdf_file_path}")
-            
+
             # Chạy phần load trong executor để không block event loop
             loop = asyncio.get_event_loop()
             splits = await loop.run_in_executor(
-                None, 
-                lambda: loader.load(path_string=pdf_file_path, original_filename=os.path.basename(pdf_file_path))
+                None,
+                lambda: loader.load(
+                    path_string=pdf_file_path,
+                    original_filename=os.path.basename(pdf_file_path),
+                ),
             )
-            
+
             processing_time = time.time() - start_time
-            
-            logger.info(f"Completed {pdf_file_path} in {processing_time:.1f}s - {len(splits)} documents")
-            
+
+            logger.info(
+                f"Completed {pdf_file_path} in {processing_time:.1f}s - {len(splits)} documents"
+            )
+
             return {
-                'file_name': os.path.basename(pdf_file_path),
-                'success': True,
-                'splits': splits,
-                'count': len(splits),
-                'processing_time': processing_time,
-                'file_size_mb': os.path.getsize(pdf_file_path) / (1024 * 1024)
+                "file_name": os.path.basename(pdf_file_path),
+                "success": True,
+                "splits": splits,
+                "count": len(splits),
+                "processing_time": processing_time,
+                "file_size_mb": os.path.getsize(pdf_file_path) / (1024 * 1024),
             }
         except Exception as e:
             processing_time = time.time() - start_time
-            logger.error(f"Error processing {pdf_file_path} after {processing_time:.1f}s: {str(e)}")
+            logger.error(
+                f"Error processing {pdf_file_path} after {processing_time:.1f}s: {str(e)}"
+            )
             return {
-                'file_name': os.path.basename(pdf_file_path),
-                'success': False,
-                'error': str(e),
-                'splits': [],
-                'processing_time': processing_time,
-                'file_size_mb': os.path.getsize(pdf_file_path) / (1024 * 1024)
+                "file_name": os.path.basename(pdf_file_path),
+                "success": False,
+                "error": str(e),
+                "splits": [],
+                "processing_time": processing_time,
+                "file_size_mb": os.path.getsize(pdf_file_path) / (1024 * 1024),
             }
 
     async def load_pdfs(
@@ -118,56 +128,68 @@ class RAG:
             credential_path=credential_path,
             debug=debug_mode,
             temp_dir=temp_dir,
-            enrich=False
+            enrich=False,
         )
-        
+
         all_splits = []
-        
+
         start_time = time.time()
-        
+
         # Tạo các task bất đồng bộ cho mỗi file PDF
         tasks = [
-            self._process_pdf_async(pdf_file_path, loader, debug_mode) 
+            self._process_pdf_async(pdf_file_path, loader, debug_mode)
             for pdf_file_path in pdf_files
         ]
-        
+
         # Chạy tất cả tasks bất đồng bộ
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         # Xử lý kết quả
         processed_results = []
         for result in results:
             if isinstance(result, Exception):
                 # Nếu có exception, tạo result object với thông tin lỗi
-                processed_results.append({
-                    'file_name': 'unknown',
-                    'success': False,
-                    'error': str(result),
-                    'splits': [],
-                    'processing_time': 0,
-                    'file_size_mb': 0
-                })
+                processed_results.append(
+                    {
+                        "file_name": "unknown",
+                        "success": False,
+                        "error": str(result),
+                        "splits": [],
+                        "processing_time": 0,
+                        "file_size_mb": 0,
+                    }
+                )
             else:
                 processed_results.append(result)
-                if result['success']:
-                    all_splits.extend(result['splits'])
-        
+                if result["success"]:
+                    all_splits.extend(result["splits"])
+
         total_time = time.time() - start_time
-        successful_files = len([r for r in processed_results if r['success']])
-        total_docs = sum(r['count'] for r in processed_results if r['success'])
-        text_docs = len([doc for doc in all_splits if doc.metadata.get("type") == "text"])
-        table_docs = len([doc for doc in all_splits if doc.metadata.get("type") == "table"])
-        
-        logger.info(f"Processing completed: {successful_files}/{len(pdf_files)} files, {total_docs} documents, {self._format_time(total_time)}")
-        
-        return all_splits, processed_results, {
-            'successful_files': successful_files,
-            'total_files': len(pdf_files),
-            'total_docs': total_docs,
-            'text_docs': text_docs,
-            'table_docs': table_docs,
-            'total_time': total_time
-        }
+        successful_files = len([r for r in processed_results if r["success"]])
+        total_docs = sum(r["count"] for r in processed_results if r["success"])
+        text_docs = len(
+            [doc for doc in all_splits if doc.metadata.get("type") == "text"]
+        )
+        table_docs = len(
+            [doc for doc in all_splits if doc.metadata.get("type") == "table"]
+        )
+
+        logger.info(
+            f"Processing completed: {successful_files}/{len(pdf_files)} files, {total_docs} documents, {self._format_time(total_time)}"
+        )
+
+        return (
+            all_splits,
+            processed_results,
+            {
+                "successful_files": successful_files,
+                "total_files": len(pdf_files),
+                "total_docs": total_docs,
+                "text_docs": text_docs,
+                "table_docs": table_docs,
+                "total_time": total_time,
+            },
+        )
 
     def add_documents(
         self,
@@ -182,9 +204,7 @@ class RAG:
         filter_types: Optional[List[str]] = None,
     ):
         return self.vectorstore.retrieve_documents(
-            query=query,
-            filter_sources=filter_sources,
-            filter_types=filter_types
+            query=query, filter_sources=filter_sources, filter_types=filter_types
         )
 
     def clear_vectorstore(self):
@@ -196,33 +216,38 @@ class RAG:
     def get_vectorstore(self):
         return self.vectorstore
 
-    def query_analysis(self, query: str, available_sources: Optional[List[str]] = None, 
-                      available_types: Optional[List[str]] = ["text", "table"]):
+    def query_analysis(
+        self,
+        query: str,
+        available_sources: Optional[List[str]] = None,
+        available_types: Optional[List[str]] = ["text", "table"],
+    ):
         """
         Analyze query and return relevant sources and types
-        
+
         Args:
             query (str): User input query
             available_sources (Optional[List[str]]): List of available sources to filter against
             available_types (Optional[List[str]]): List of available types to filter against
-            
+
         Returns:
             QueryAnalysis: Object containing analysis information
-            
+
         Raises:
             ValueError: When unable to parse results
             Exception: Other errors from LLM
         """
-        
+
         class QueryAnalysis(BaseModel):
             """Schema for query analysis results"""
+
             sources: List[str] = Field(
                 description="List of sources relevant to the query",
-                example=["document1.pdf", "report2024.docx"]
+                example=["document1.pdf", "report2024.docx"],
             )
             types: List[str] = Field(
-                description="List of types relevant to the query", 
-                example=["report", "manual", "specification"]
+                description="List of types relevant to the query",
+                example=["report", "manual", "specification"],
             )
             # pages: Optional[List[int]] = Field(
             #     description="List of pages relevant to the query (if any)",
@@ -233,29 +258,29 @@ class RAG:
                 description="Confidence level of the analysis (0-1)",
                 default=None,
                 ge=0.0,
-                le=1.0
+                le=1.0,
             )
             reasoning: Optional[str] = Field(
                 description="Reasoning for why these sources/types were selected",
-                default=None
+                default=None,
             )
-        
+
         parser = PydanticOutputParser(pydantic_object=QueryAnalysis)
-        
+
         try:
             llm = ChatVertexAI(
                 model_name="gemini-2.0-flash",
                 temperature=0.1,  # Lower temperature for more stable results
                 max_tokens=1024,  # Limit tokens to avoid overly long responses
             )
-            
+
             # Create context about available sources/types if provided
             context_info = ""
             if available_sources:
                 context_info += f"\nAvailable sources: {', '.join(available_sources)}"
             if available_types:
                 context_info += f"\nAvailable types: {', '.join(available_types)}"
-            
+
             template = """
             You are an expert document analyst. Your task is to analyze the user query and determine which document sources and types are most relevant.
             
@@ -274,22 +299,21 @@ class RAG:
             
             Important: Return only valid JSON format as specified above. Do not include pages in your response.
             """
-            
+
             prompt_template = PromptTemplate(
                 template=template,
                 input_variables=["query", "context_info"],
-                partial_variables={"format_instructions": parser.get_format_instructions()},
+                partial_variables={
+                    "format_instructions": parser.get_format_instructions()
+                },
             )
-            
+
             # Create chain
             chain = prompt_template | llm | parser
-            
+
             # Invoke with error handling
-            response = chain.invoke({
-                "query": query,
-                "context_info": context_info
-            })
-            
+            response = chain.invoke({"query": query, "context_info": context_info})
+
             # Validate and filter results with improved source matching
             if available_sources:
                 filtered_sources = []
@@ -301,26 +325,37 @@ class RAG:
                         # Check for partial match (filename without extension)
                         for available_source in available_sources:
                             # Remove extension from available source for comparison
-                            available_name = available_source.rsplit('.', 1)[0] if '.' in available_source else available_source
-                            suggested_name = suggested_source.rsplit('.', 1)[0] if '.' in suggested_source else suggested_source
-                            
+                            available_name = (
+                                available_source.rsplit(".", 1)[0]
+                                if "." in available_source
+                                else available_source
+                            )
+                            suggested_name = (
+                                suggested_source.rsplit(".", 1)[0]
+                                if "." in suggested_source
+                                else suggested_source
+                            )
+
                             # Check if suggested name matches available name (case insensitive)
                             if suggested_name.lower() == available_name.lower():
                                 filtered_sources.append(available_source)
                                 break
                             # Also check if suggested name is contained in available name
-                            elif suggested_name.lower() in available_name.lower() or available_name.lower() in suggested_name.lower():
+                            elif (
+                                suggested_name.lower() in available_name.lower()
+                                or available_name.lower() in suggested_name.lower()
+                            ):
                                 filtered_sources.append(available_source)
                                 break
-                
+
                 response.sources = list(set(filtered_sources))  # Remove duplicates
-            
+
             if available_types:
                 # Filter only available types
                 response.types = [t for t in response.types if t in available_types]
-            
+
             return response
-            
+
         except Exception as e:
             logger.error(f"Error in query_analysis: {str(e)}")
             # Return default result when error occurs
@@ -328,51 +363,57 @@ class RAG:
                 sources=[],
                 types=[],
                 confidence_score=0.0,
-                reasoning=f"Error occurred during analysis: {str(e)}"
+                reasoning=f"Error occurred during analysis: {str(e)}",
             )
 
     def prepare_context(self, docs: List[Document]) -> str:
         context_parts = ["<documents>"]
-    
+
         for i, doc in enumerate(docs, 1):
             doc_str = f'\n<document index="{i}">'
-            
+
             doc_str += "\n  <metadata>"
             for key, value in doc.metadata.items():
                 doc_str += f"\n    <{key}>{value}</{key}>"
             doc_str += "\n  </metadata>"
-            
+
             doc_str += f"\n  <content>\n{doc.page_content}\n  </content>"
-            
+
             doc_str += "\n</document>"
-            
+
             context_parts.append(doc_str)
-            
+
         context_parts.append("\n</documents>")
-        
+
         return "".join(context_parts)
-    
+
     def generate_response(self, prompt: str, context: str) -> str:
         prompt_template = PromptTemplate(
             template=GENERATE_PROMPT,
             input_variables=["context", "question"],
         )
-        
+
         llm = ChatVertexAI(
             model_name="gemini-2.0-flash",
             temperature=0.3,
         )
-        
+
         chain = prompt_template | llm
-        response = chain.invoke({
-            "context": context,
-            "question": prompt,
-        })
+        response = chain.invoke(
+            {
+                "context": context,
+                "question": prompt,
+            }
+        )
         return response
-    
+
     def __call__(self, query: str, filter: bool = True) -> dict:
-        analysis = self.query_analysis(query, available_sources=self.get_unique_sources(), available_types=["text", "table"])
-        
+        analysis = self.query_analysis(
+            query,
+            available_sources=self.get_unique_sources(),
+            available_types=["text", "table"],
+        )
+
         # Apply filtering based on analysis if filter is enabled
         if filter and analysis:
             filter_sources = analysis.sources if analysis.sources else None
@@ -380,15 +421,13 @@ class RAG:
         else:
             filter_sources = None
             filter_types = None
-        
+
         docs = self.retrieve_documents(
-            query=query,
-            filter_sources=filter_sources,
-            filter_types=filter_types
+            query=query, filter_sources=filter_sources, filter_types=filter_types
         )
         context = self.prepare_context(docs)
         response = self.generate_response(query, context)
-        
+
         return {
             "response": response,
             "context": context,
@@ -396,7 +435,3 @@ class RAG:
             "query": query,
             "analysis": analysis,
         }
-        
-        
-        
-        
