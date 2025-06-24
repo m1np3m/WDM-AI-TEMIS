@@ -23,10 +23,13 @@ async def main():
     splits, results, stats = await my_rag.load_pdfs(pdf_files)
     my_rag.add_documents(splits)
     
-    # Query
-    query = "List of voice performances in direct-to-video and television films"
-    response = my_rag(query)
-    print(response)
+    while True:
+        query = input("Enter your query: ")
+        if query.lower() == "exit":
+            break
+        response = my_rag(query)
+        print(response.content)
+        print("-"*100)
 
 if __name__ == "__main__":
     asyncio.run(main())

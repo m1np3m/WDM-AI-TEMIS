@@ -29,7 +29,7 @@ class RAG:
         self,
         embedding_type: str,
         embedding_model: str,
-        enable_hybrid_search: str,
+        enable_hybrid_search: bool,
         chunk_type: str,
         use_memory: bool,
         collection_name: str,
@@ -226,16 +226,18 @@ class RAG:
         })
         return response
     
-    def __call__(self, query: str) -> str:
+    def __call__(self, query: str) -> dict:
         docs = self.retrieve_documents(query)
         context = self.prepare_context(docs)
-        return self.generate_response(query, context)
-    
-    def __del__(self):
-        try:
-            self.vectorstore.clear_vectorstore()
-        except:
-            pass  # Ignore any cleanup errors
+        response = self.generate_response(query, context)
+        
+        return {
+            "response": response,
+            "context": context,
+            "docs": docs,
+            "query": query,
+        }
+        
         
         
         
