@@ -8,14 +8,14 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from google.oauth2 import service_account
-from merge_table_prompt import MERGE_TABLE_PROMPT
+from prompts import MERGE_TABLE_PROMPT
 
 
 # Add the project root directory to Python path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
-from src.extract_tables_2 import full_pipeline, get_pdf_name, get_tables_from_pdf_2
+from src.WDMParser.extract_tables import full_pipeline, get_pdf_name, get_tables_from_pdf
 
 
 load_dotenv()

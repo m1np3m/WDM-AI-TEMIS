@@ -107,8 +107,8 @@ class Enrich_Openrouter:
         1. **Raw Extracted Markdown Table**: This is the output from automated table extraction tools. While it contains all the necessary data, its structure may be incorrect — column headers may be misaligned, rows may not match properly, and formatting can be inconsistent.
         Use this only to reference the raw data values, not the structure. Here is the raw extracted markdown table below:
         {markdown_content}
-        2. **Table Summary**:This is a detailed description of the original table’s purpose, layout, and the meaning of each column and row.
-        Use this as your primary source to guide the table’s structure. Here is the summary of the table:
+        2. **Table Summary**: This is a detailed description of the original table's purpose, layout, and the meaning of each column and row.
+        Use this as your primary source to guide the table's structure. Here is the summary of the table:
         {summary_content}
         3. **Table Image (Visual Shortcut)**: This is a visual representation of the actual table. Use it to validate the layout, verify column headers, row alignments, and relationships between data entries.
         This image acts as your ground truth.
@@ -208,15 +208,20 @@ class Enrich_Openrouter:
         return results
 
 
-
-
-
-
-
 class Enrich_VertexAI:
-    def __init__(self, model_name="gemini-1.5-flash", credentials_path=None):
+    def __init__(self, model_name="gemini-2.0-flash-001", credentials_path=None):
         if credentials_path is None:
-            raise ValueError("Bạn cần cung cấp đường dẫn tới credentials_path")
+            raise ValueError(
+                "credentials_path is required. "
+                "Please provide the path to your Google Cloud service account JSON key file. "
+                "Example: Enrich_VertexAI(credentials_path='/path/to/your/service-account-key.json')"
+            )
+        
+        if not os.path.exists(credentials_path):
+            raise FileNotFoundError(
+                f"Credentials file not found at: {credentials_path}. "
+                "Please ensure the path is correct and the file exists."
+            )
 
         self.credentials = service_account.Credentials.from_service_account_file(credentials_path)
         self.llm = ChatVertexAI(
@@ -280,7 +285,7 @@ class Enrich_VertexAI:
         time.sleep(2)  
         return self.table_markdown_context(base64_image, markdown_content, summary_content)
 
-    def full_pipeline(self, file_path, extract_table_markdown, result_path):
+    def full_pipeline(self, file_path, extract_table_markdown, result_path, verbose=1, return_markdown=False):
         results = []
         filename = os.path.basename(file_path)
         if not file_path.lower().endswith(".png"):
@@ -292,6 +297,9 @@ class Enrich_VertexAI:
                 base64_image = base64.b64encode(img_file.read()).decode("utf-8")
 
             enriched_markdown = self.enrich_image(base64_image=base64_image, markdown_content=extract_table_markdown)
+
+            if return_markdown:
+                return enriched_markdown
 
             results.append({
                 "image_path": filename,
@@ -309,43 +317,3 @@ class Enrich_VertexAI:
             json.dump(results, json_file, indent=2, ensure_ascii=False)
 
         return results
-
-
-
-if __name__ == "__main__":
-    import json
-    from dotenv import load_dotenv, find_dotenv
-    load_dotenv(find_dotenv())
-    import os
-
-    image_path = "C:/Users/Admin/Data/WDM-AI-TEMIS/data/data-finetune/final_data/extracted_images/aca6e4ba-2349-425b-ba92-9ed6e2747a3d.png"
-    markdown_content = "|March24,2010|☑Mexico|0–0|☑Iceland|InternationalFriendly|63,227|\n|--|--|--|--|--|--|\n|June 9,2011|☑Costa Rica|1–1|☑El Salvador|2011CONCACAFGold CupGroup A|46,012|\n|June 9,2011|☑Mexico|5–0|☑Cuba|2011CONCACAFGold CupGroup A|46,012|\n|August2, 2014|☑Liverpool|2–0|☑Milan|2014InternationalChampionsCup|69,364|\n|July 15,2015|☑Cuba|1–0|☑Guatemala|2015CONCACAFGold CupGroup C|55,823|\n|July 15,2015|☑Mexico|4–4|☑Trinidad and Tobago|2015CONCACAFGold CupGroup C|55,823|\n|July 25,2015|☑Chelsea|1–1(6–5 pen.)|☑Paris Saint-Germain|2015InternationalChampionsCup|61,224|\n|July 30,2016|☑BayernMunich|4–1|☑Inter Milan|2016InternationalChampionsCup|53,629|\n|July 22,2018|☑BorussiaDortmund|3–1|☑Liverpool|2018InternationalChampionsCup|55,447|\n|June23,2019|☑Canada|7–0|☑Cuba|2019CONCACAFGold CupGroup A|59,283|\n|June23,2019|☑Mexico|3–2|☑Martinique|2019CONCACAFGold CupGroup A|59,283|\n|July 20,2019|☑Arsenal|3–0|☑Fiorentina|2019InternationalChampionsCup|34,902|\n|October3, 2019|☑United Stateswomen|2–0|☑South Koreawomen|Women’sInternationalFriendly|30,071|\n"
-    
-    print("******************************")
-
-    processor = Enrich_Openrouter()
-
-    result_path = "./processed_results.json"
-    list_keys = [
-            os.getenv('API_OPENROUTE_locdinh'),
-            os.getenv('API_OPENROUTE_pjx'),
-            os.getenv('API_OPENROUTE_ueh'),
-            os.getenv('API_OPENROUTE_dynamic'),
-            os.getenv('API_OPENROUTE_innolab')
-        ]
-
-    results = processor.full_pipeline(image_path, markdown_content, result_path, list_keys)
-    print("Pipeline completed. Results saved to:", result_path)
-    print("Results:", results)
-
-    print("******************************")
-    processor = Enrich_VertexAI(
-        credentials_path="C:/Users/Admin/Data/multimodal-rag-baseline/gdsc2025-74596a254ab4.json"
-    )
-
-
-    result_path = "./vertex_chat_results.json"
-
-    results = processor.full_pipeline(image_path, markdown_content, result_path)
-    print("Pipeline completed. Results saved to:", result_path)
-    print("Results:", results)

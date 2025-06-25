@@ -2,9 +2,20 @@
 
 import os
 import time
-import requests
-
 from typing import Callable, List, Optional
+import requests
+import torch
+from .bge_finetune import BGEv2m3Reranker
+
+def get_device():
+    if torch.cuda.is_available():
+        return "cuda"
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        return "mps"  # Apple Silicon
+    else:
+        return "cpu"
+
+DEVICE = get_device()
 
 # === Jina ===
 JINA_MODEL = "jina-colbert-v1-en"
@@ -12,31 +23,42 @@ JINA_URL = "https://api.jina.ai/v1/rerank"
 
 # === Mixedbread ===
 from mixedbread import Mixedbread
+
 mxbai = Mixedbread(api_key=os.getenv("MXBAI_API_KEY"))
 
 # === Cohere ===
 import cohere
-co = cohere.Client(os.getenv("COHERE_API_KEY"))
+
+co = cohere.Client(os.getenv("COHERE_KEY"))
 
 # === BCE ===
 from BCEmbedding import RerankerModel
-bce_model = RerankerModel("maidalun1020/bce-reranker-base_v1", use_fp16=True, device="cuda")
+
+bce_model = RerankerModel("maidalun1020/bce-reranker-base_v1", use_fp16=True, device=DEVICE)
 
 # === FlagEmbedding ColBERT ===
 from FlagEmbedding import FlagAutoReranker
+
 colbert_model = FlagAutoReranker.from_finetuned(
     model_name_or_path="BAAI/bge-reranker-v2-minicpm-layerwise",
     max_length=512,
-    devices='cuda'
+    devices=DEVICE
 )
 
 # === Flashrank ===
 from flashrank import Ranker, RerankRequest
+
 flashrank_model = Ranker(model_name="ms-marco-MiniLM-L-12-v2", max_length=512)
 
 # === Sentence Transformers ===
 from sentence_transformers import CrossEncoder
+
 st_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+# === BGE reranker ===
+bge_model = BGEv2m3Reranker(
+    model_path=os.getenv("BGEV3_RE_RANKER_PATH", "src/bge_v2_m3_rerank/bgev2m3_finetune"),
+    device=DEVICE
+)
 
 
 class Reranker:
@@ -57,7 +79,8 @@ class Reranker:
             "mixedbread": self.mixedbread_reranker,
             "cohere": self.cohere_reranker,
             "bce": self.bce_reranker,
-            "colbert": self.colbert_reranker,
+            "pretrained_bge": self.pretrained_bge_reranker,
+            "finetune_bge": self.finetune_bge_reranker,
             "flashrank": self.flashrank_reranker,
             "st-crossencoder": self.st_crossencoder_reranker,
         }
@@ -121,16 +144,6 @@ class Reranker:
             print(f"[BCE Reranker] Error: {e}")
             return documents[:top_k]
 
-    def colbert_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
-        try:
-            pairs = [[query, doc] for doc in documents]
-            scores = colbert_model.compute_score(pairs, normalize=True)
-            ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
-            return [doc for doc, _ in ranked[:top_k]]
-        except Exception as e:
-            print(f"[ColBERT Reranker] Error: {e}")
-            return documents[:top_k]
-
     def flashrank_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
         try:
             passages = [{"text": doc} for doc in documents]
@@ -149,6 +162,26 @@ class Reranker:
             return [doc for doc, _ in ranked[:top_k]]
         except Exception as e:
             print(f"[ST CrossEncoder Reranker] Error: {e}")
+            return documents[:top_k]
+        
+    def pretrained_bge_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
+        try:
+            pairs = [[query, doc] for doc in documents]
+            scores = colbert_model.compute_score(pairs, normalize=True)
+            ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
+            return [doc for doc, _ in ranked[:top_k]]
+        except Exception as e:
+            print(f"[BGE Reranker] Error: {e}")
+            return documents[:top_k]
+        
+    def finetune_bge_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
+        try:
+            pairs = [[query, doc] for doc in documents]
+            scores = bge_model.compute_score(pairs, normalize=True)
+            ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
+            return [doc for doc, _ in ranked[:top_k]]
+        except Exception as e:
+            print(f"[BGE Reranker] Error: {e}")
             return documents[:top_k]
 
 if __name__ == 'main':

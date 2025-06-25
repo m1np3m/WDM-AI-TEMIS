@@ -1,10 +1,11 @@
 import os
 import time
 from typing import List, Optional, Callable
+import torch
 
 from langchain.vectorstores import Qdrant
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.text_splitter import (
     RecursiveCharacterTextSplitter,
     CharacterTextSplitter,
@@ -78,13 +79,17 @@ class QdrantRAG:
 
         docs_contents = [doc.page_content for doc in docs_processed if hasattr(doc, 'page_content')]
         docs_metadatas = [doc.metadata for doc in docs_processed if hasattr(doc, 'metadata')]
-        dense_embeddings = HuggingFaceEmbeddings(model_name=embedding_model_name)
-        vector_size = len(dense_embeddings.embed_query("test"))
+        
+        test_embedding = embedding_model.embed_query("test")
+        actual_vector_size = len(test_embedding)
+        
         if collection_name not in [col.name for col in self.client.get_collections().collections]:
             self.client.create_collection(
                 collection_name=collection_name,
-                vectors_config=VectorParams(size=vector_size, distance=Distance.COSINE)
+                vectors_config=VectorParams(size=actual_vector_size, distance=Distance.COSINE)
             )
+        else:
+            pass
 
         vectorstore = Qdrant(
             client=self.client,
@@ -116,7 +121,8 @@ class QdrantRAG:
         docs_metadatas = [doc.metadata for doc in docs_processed if hasattr(doc, 'metadata')]
 
         # Create collection with BOTH dense & sparse vector configs
-        dense_embeddings = HuggingFaceEmbeddings(model_name=embedding_model_name, model_kwargs={"device": "cuda"})
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        dense_embeddings = HuggingFaceEmbeddings(model_name=embedding_model_name, model_kwargs={"device": device})
         sparse_embeddings = FastEmbedSparse(model_name=sparse_model_name)
         vector_size = len(dense_embeddings.embed_query("test"))
 
@@ -147,18 +153,21 @@ class QdrantRAG:
         vectorstore.add_texts(texts=docs_contents, metadatas=docs_metadatas)
 
 
-    def get_documents(self, collection_name, query, embedding_model, num_documents=5):
+    def get_documents(self, collection_name, query, embedding_model, num_documents=5, reranker = None):
         self.client.set_model(embedding_model_name=embedding_model)
         search_results = self.client.query(
             collection_name=collection_name,
             query_text=query,
             limit=num_documents,
         )
-        return [r.metadata['document'] for r in search_results]
+        documents = [r.metadata['document'] for r in search_results]
+        if reranker:
+            documents = reranker.rerank(query, documents, top_k=num_documents)
+        return documents[:num_documents]
 
-    def get_documents_gemini(self, collection_name, query, num_documents=5):
+    def get_documents_gemini(self, collection_name, query, embedding_model="models/embedding-001", num_documents=5):
         embedding_model = GoogleGenerativeAIEmbeddings(
-            model="models/embedding-001",
+            model=embedding_model,
             google_api_key=os.getenv("GEMINI_API_KEY")
         )
 
@@ -171,7 +180,9 @@ class QdrantRAG:
         search_results = vectorstore.similarity_search(query, k=num_documents)
         return [r.page_content for r in search_results]
 
-    def get_documents_hybrid(self, collection_name, query, embedding_model_name, num_documents=5, reranker: Optional[Callable] = None):
+    def get_documents_hybrid(self, collection_name, query, embedding_model_name, 
+                        num_documents=5, reranker: Optional[Callable] = None,
+                        retrieval_k=None):  # Thêm parameter mới
         dense_embeddings = FastEmbedEmbeddings(model_name=embedding_model_name)
         sparse_embeddings = FastEmbedSparse(model_name="Qdrant/bm25")
 
@@ -185,12 +196,17 @@ class QdrantRAG:
             sparse_vector_name="sparse"
         )
 
-        raw_results = vectorstore.similarity_search(query)
+        # ✅ QUAN TRỌNG: Retrieve số lượng lớn hơn cho reranker
+        if reranker:
+            retrieval_k = retrieval_k or (num_documents * 3)  # Retrieve 3x documents cho reranker
+            raw_results = vectorstore.similarity_search(query, k=retrieval_k)
+        else:
+            raw_results = vectorstore.similarity_search(query, k=num_documents)
+        
         documents = [doc.page_content for doc in raw_results]
 
-
         if reranker:
-            documents = reranker(query, documents, top_k=num_documents)
+            documents = reranker.rerank(query, documents, top_k=num_documents)
 
         return documents[:num_documents]
 
