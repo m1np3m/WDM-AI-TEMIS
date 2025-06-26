@@ -73,6 +73,11 @@ def parse_args():
     )
     return parser.parse_args()
 
+def get_collection_name(args):
+    hybrid_flag = "hybrid" if args.hybrid_search else "base"
+    reranker_flag = args.reranker_model_name if args.reranker_model_name else "NoneReranker"
+    embedding_name = args.embedding_model_name.split("/")[-1] if "/" in args.embedding_model_name else args.embedding_model_name
+    return f"exp_{hybrid_flag}_cs{args.chunk_size}_co{args.chunk_overlap}_nd{args.num_docs}_{embedding_name}_{args.chunk_type}_{reranker_flag}"
 
 class Args:
     def __init__(
@@ -142,7 +147,7 @@ async def main(args):
     client = qdrant_client.QdrantClient(
         path=f"{path_to_save}/qdrant_client_memory",
     )    
-    COLLECTION_NAME = f"exp_{hybrid_flag}_cs{chunk_size}_co{chunk_overlap}_nd{num_docs}_{embedding_name}_{chunk_type}_{reranker_flag}"
+    COLLECTION_NAME = get_collection_name(args)
     print(f"Collection name: {COLLECTION_NAME}")
 
     # check if collection exists and handle force_create
@@ -284,36 +289,37 @@ if __name__ == "__main__":
     mlflow.set_tracking_uri("file:./mlruns")
     mlflow.set_experiment("RAG_Evaluation_Experiments")
     
+    pdf_folder = f"{data_dir}/QA_tables/pdf"
+    qa_path = f"{data_dir}/QA_tables/fixed_label_QA.json"
+    
     # Define different configurations to test
     configs = [
-        # Base configuration
         Args(
-            pdf_folder=f"{data_dir}/QA_tables/pdf",
-            qa_path=f"{data_dir}/QA_tables/fixed_label_QA.json",
+            pdf_folder=pdf_folder,
+            qa_path=qa_path,
             chunk_size=512,
             chunk_overlap=128,
             num_docs=7,
             embedding_model_name="BAAI/bge-base-en",
             chunk_type="character",
-            hybrid_search=False,
-            reranker_model_name=None,
+            hybrid_search=True,
+            reranker_model_name="bce",
             path_to_save=f"{exps_dir}/",
             force_create=False,
         ),
-        # Hybrid search configuration
-        Args(
-            pdf_folder=f"{data_dir}/QA_tables/pdf",
-            qa_path=f"{data_dir}/QA_tables/fixed_label_QA.json",
-            chunk_size=512,
-            chunk_overlap=128,
-            num_docs=5,
-            embedding_model_name="BAAI/bge-base-en",
-            chunk_type="character",
-            hybrid_search=False,
-            reranker_model_name=None,
-            path_to_save=f"{exps_dir}/",
-            force_create=False,
-        ),
+        # Args(
+        #     pdf_folder=pdf_folder,
+        #     qa_path=qa_path,
+        #     chunk_size=512,
+        #     chunk_overlap=128,
+        #     num_docs=5,
+        #     embedding_model_name="BAAI/bge-base-en",
+        #     chunk_type="character",
+        #     hybrid_search=False,
+        #     reranker_model_name=None,
+        #     path_to_save=f"{exps_dir}/",
+        #     force_create=False,
+        # ),
     ]
     
     # You can also parse args instead of using predefined configs
@@ -321,7 +327,8 @@ if __name__ == "__main__":
     # configs = [args]
     
     for i, args in enumerate(configs):
-        with mlflow.start_run(run_name=f"RAG_Eval_Run_{i+1}"):
+        collection_name = get_collection_name(args)
+        with mlflow.start_run(run_name=collection_name):
             print(f"\n🚀 Starting MLFlow Run {i+1}/{len(configs)}")
             print("=" * 60)
             
@@ -347,24 +354,37 @@ if __name__ == "__main__":
             mlflow.log_param("embedding_name", embedding_name)
             
             # Create collection name and log it
-            collection_name = f"exp_{hybrid_flag}_cs{args.chunk_size}_co{args.chunk_overlap}_nd{args.num_docs}_{embedding_name}_{args.chunk_type}_{reranker_flag}"
             mlflow.log_param("collection_name", collection_name)
             
             try:
                 # Run the main evaluation
                 result = asyncio.run(main(args))
                 
-                # Log metrics
-                mlflow.log_metric("add_document_time", result['add_document_time'])
-                mlflow.log_metric("eval_time", result['eval_time'])
-                mlflow.log_metric("total_time", result['add_document_time'] + result['eval_time'])
-                mlflow.log_metric("context_precision", result['context_precision'])
-                mlflow.log_metric("context_recall", result['context_recall'])
-                mlflow.log_metric("hit_rate", result['hit_rate'])
-                mlflow.log_metric("mrr", result['mrr'])
-                
-                # Calculate composite metrics
-                f1_score = 2 * (result['context_precision'] * result['context_recall']) / (result['context_precision'] + result['context_recall']) if (result['context_precision'] + result['context_recall']) > 0 else 0
+                # Làm tròn các metrics đến 4 chữ số thập phân
+                add_document_time = round(result['add_document_time'], 4)
+                eval_time = round(result['eval_time'], 4)
+                total_time = round(result['add_document_time'] + result['eval_time'], 4)
+                context_precision = round(result['context_precision'], 4)
+                context_recall = round(result['context_recall'], 4)
+                hit_rate = round(result['hit_rate'], 4)
+                mrr = round(result['mrr'], 4)
+                f1_score = (
+                    round(
+                        2 * (result['context_precision'] * result['context_recall']) / (result['context_precision'] + result['context_recall']),
+                        4,
+                    )
+                    if (result['context_precision'] + result['context_recall']) > 0
+                    else 0
+                )
+
+                # Log metrics đã làm tròn
+                mlflow.log_metric("add_document_time", add_document_time)
+                mlflow.log_metric("eval_time", eval_time)
+                mlflow.log_metric("total_time", total_time)
+                mlflow.log_metric("context_precision", context_precision)
+                mlflow.log_metric("context_recall", context_recall)
+                mlflow.log_metric("hit_rate", hit_rate)
+                mlflow.log_metric("mrr", mrr)
                 mlflow.log_metric("f1_score", f1_score)
                 
                 # Log artifacts (save CSV results)

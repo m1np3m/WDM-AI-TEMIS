@@ -120,7 +120,7 @@ async def process_all_pdfs_in_folder(folder_path, qa_path):
             pdf_tasks.append(task)
 
     # Chạy tất cả các task bất đồng bộ cùng lúc
-    print(f"\n>>> Bắt đầu xử lý {len(pdf_tasks)} file PDF bất đồng bộ...")
+    print(f"\n>>> Bắt đầu xử lý {len(pdf_tasks)} file PDF ...")
     page_docs_results = await asyncio.gather(*pdf_tasks)
     
     # Gộp tất cả kết quả page documents
