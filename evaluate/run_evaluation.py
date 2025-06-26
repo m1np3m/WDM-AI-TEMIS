@@ -9,7 +9,6 @@ import mlflow
 import pandas as pd
 import qdrant_client
 from dotenv import find_dotenv, load_dotenv
-from prepare_documents import process_all_pdfs_in_folder
 
 # append project dir
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -22,6 +21,22 @@ from utils.format_utils import *
 from utils.rag_evaluation_optimized import plot_experiment_comparison, run_ragas_eval
 from utils.rag_qdrant_utils import QdrantRAG
 from utils.reranker_utils_optimized import Reranker
+
+# Import prepare_documents from current directory (evaluate/)
+try:
+    from .prepare_documents import process_all_pdfs_in_folder
+except ImportError:
+    # Fallback to local import if relative import fails
+    try:
+        from prepare_documents import process_all_pdfs_in_folder
+    except ImportError:
+        # Last fallback - add current directory to path
+        import os
+        import sys
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        if current_dir not in sys.path:
+            sys.path.insert(0, current_dir)
+        from prepare_documents import process_all_pdfs_in_folder
 
 load_dotenv(find_dotenv())
 

@@ -158,19 +158,39 @@ class Reranker:
         if self._st_model is None:
             try:
                 from sentence_transformers import CrossEncoder
-                self._st_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+                
+                # Load model on CPU first to avoid meta tensor issues
+                self._st_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", device="cpu")
                 
                 # Try to move model to GPU if available
                 if DEVICE != "cpu":
                     try:
+                        # Check if model can be moved to target device
                         if hasattr(self._st_model, 'to'):
-                            self._st_model = self._st_model.to(DEVICE)
+                            # Use to_empty() if available to handle meta tensors
+                            if hasattr(self._st_model, 'to_empty'):
+                                self._st_model = self._st_model.to_empty(device=DEVICE)
+                            else:
+                                self._st_model = self._st_model.to(DEVICE)
                             print(f"✅ ST CrossEncoder moved to {DEVICE}")
                         elif hasattr(self._st_model, 'model') and hasattr(self._st_model.model, 'to'):
-                            self._st_model.model = self._st_model.model.to(DEVICE)
+                            # Handle sentence-transformers internal model structure
+                            if hasattr(self._st_model.model, 'to_empty'):
+                                self._st_model.model = self._st_model.model.to_empty(device=DEVICE)
+                            else:
+                                self._st_model.model = self._st_model.model.to(DEVICE)
                             print(f"✅ ST CrossEncoder model moved to {DEVICE}")
+                        else:
+                            # Try manual device assignment
+                            if hasattr(self._st_model, '_target_device'):
+                                self._st_model._target_device = DEVICE
+                            print(f"✅ ST CrossEncoder device set to {DEVICE}")
                     except Exception as e:
-                        print(f"⚠️ Failed to move ST CrossEncoder to {DEVICE}: {e}, using CPU")
+                        print(f"⚠️ Failed to move ST CrossEncoder to {DEVICE}: {e}")
+                        print("🔄 Using CPU for ST CrossEncoder...")
+                        # Ensure model stays on CPU
+                        if hasattr(self._st_model, 'to'):
+                            self._st_model = self._st_model.to("cpu")
                         
             except Exception as e:
                 print(f"❌ Failed to load ST CrossEncoder: {e}")
@@ -182,8 +202,17 @@ class Reranker:
             ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
             return [doc for doc, _ in ranked[:top_k]]
         except Exception as e:
-            print(f"[ST CrossEncoder Reranker] Error: {e}")
-            return documents[:top_k]
+            print(f"[ST CrossEncoder Reranker] Error during prediction: {e}")
+            # Try to reset model to CPU and retry
+            try:
+                if hasattr(self._st_model, 'to'):
+                    self._st_model = self._st_model.to("cpu")
+                scores = self._st_model.predict(pairs)
+                ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
+                return [doc for doc, _ in ranked[:top_k]]
+            except Exception as e2:
+                print(f"[ST CrossEncoder Reranker] CPU fallback also failed: {e2}")
+                return documents[:top_k]
         
     def pretrained_bge_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
         if self._colbert_model is None:
