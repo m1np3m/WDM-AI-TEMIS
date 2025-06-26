@@ -7,14 +7,27 @@ import requests
 import torch
 
 def get_device():
-    if torch.cuda.is_available():
-        return "cuda"
-    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-        return "mps"  # Apple Silicon
-    else:
-        return "cpu"
+    """Get the best available device for computation with safe fallback"""
+    try:
+        if torch.cuda.is_available():
+            # Test CUDA is actually working
+            test_tensor = torch.tensor([1.0]).cuda()
+            return "cuda"
+    except Exception as e:
+        print(f"⚠️ CUDA available but failed test: {e}, falling back to CPU")
+    
+    try:
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            # Test MPS is actually working  
+            test_tensor = torch.tensor([1.0]).to('mps')
+            return "mps"
+    except Exception as e:
+        print(f"⚠️ MPS available but failed test: {e}, falling back to CPU")
+    
+    return "cpu"
 
 DEVICE = get_device()
+print(f"🔧 Reranker using device: {DEVICE}")
 
 # === Constants ===
 JINA_MODEL = "jina-colbert-v1-en"
@@ -143,8 +156,25 @@ class Reranker:
 
     def st_crossencoder_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
         if self._st_model is None:
-            from sentence_transformers import CrossEncoder
-            self._st_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+            try:
+                from sentence_transformers import CrossEncoder
+                self._st_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+                
+                # Try to move model to GPU if available
+                if DEVICE != "cpu":
+                    try:
+                        if hasattr(self._st_model, 'to'):
+                            self._st_model = self._st_model.to(DEVICE)
+                            print(f"✅ ST CrossEncoder moved to {DEVICE}")
+                        elif hasattr(self._st_model, 'model') and hasattr(self._st_model.model, 'to'):
+                            self._st_model.model = self._st_model.model.to(DEVICE)
+                            print(f"✅ ST CrossEncoder model moved to {DEVICE}")
+                    except Exception as e:
+                        print(f"⚠️ Failed to move ST CrossEncoder to {DEVICE}: {e}, using CPU")
+                        
+            except Exception as e:
+                print(f"❌ Failed to load ST CrossEncoder: {e}")
+                return documents[:top_k]
         
         try:
             pairs = [[query, doc] for doc in documents]

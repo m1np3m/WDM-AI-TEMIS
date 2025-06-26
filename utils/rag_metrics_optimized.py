@@ -11,32 +11,83 @@ import os
 # Set tokenizers parallelism to avoid warnings
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-# Global model instance - load once
-model = SentenceTransformer('all-MiniLM-L6-v2')
+def get_device():
+    """Get the best available device for computation with safe fallback"""
+    try:
+        if torch.cuda.is_available():
+            # Test CUDA is actually working
+            test_tensor = torch.tensor([1.0]).cuda()
+            return "cuda"
+    except Exception as e:
+        print(f"⚠️ CUDA available but failed test: {e}, falling back to CPU")
+    
+    try:
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            # Test MPS is actually working
+            test_tensor = torch.tensor([1.0]).to('mps')
+            return "mps"
+    except Exception as e:
+        print(f"⚠️ MPS available but failed test: {e}, falling back to CPU")
+    
+    return "cpu"
+
+# Global device and model instance - load once with GPU support
+DEVICE = get_device()
+print(f"🔧 RAG Metrics using device: {DEVICE}")
+
+try:
+    # Try to load model with specified device
+    model = SentenceTransformer('all-MiniLM-L6-v2', device=DEVICE)
+    print(f"✅ SentenceTransformer loaded successfully on {DEVICE}")
+except Exception as e:
+    print(f"⚠️ Failed to load SentenceTransformer on {DEVICE}: {e}")
+    print("🔄 Falling back to CPU...")
+    DEVICE = "cpu"
+    model = SentenceTransformer('all-MiniLM-L6-v2', device="cpu")
+    print("✅ SentenceTransformer loaded successfully on CPU")
 
 def vectorized_semantic_similarity(retrieved_embs, gt_embs, threshold=0.8):
-    """Vectorized semantic similarity calculation"""
+    """Vectorized semantic similarity calculation with GPU support"""
     if len(retrieved_embs) == 0 or len(gt_embs) == 0:
         return False
     
-    # Convert to tensors if they're numpy arrays
-    def to_tensor(emb):
-        if isinstance(emb, np.ndarray):
-            return torch.from_numpy(emb)
-        elif isinstance(emb, torch.Tensor):
-            return emb
-        else:
-            return torch.tensor(emb)
-    
-    # Stack embeddings
-    ret_stack = torch.stack([to_tensor(emb) for emb in retrieved_embs])
-    gt_stack = torch.stack([to_tensor(emb) for emb in gt_embs])
-    
-    # Calculate similarity matrix
-    similarity_matrix = util.cos_sim(ret_stack, gt_stack)
-    
-    # Check threshold
-    return (similarity_matrix >= threshold).any().item()
+    try:
+        # Convert to tensors if they're numpy arrays
+        def to_tensor(emb):
+            if isinstance(emb, np.ndarray):
+                return torch.from_numpy(emb)
+            elif isinstance(emb, torch.Tensor):
+                return emb
+            else:
+                return torch.tensor(emb)
+        
+        # Stack embeddings and move to device
+        ret_stack = torch.stack([to_tensor(emb) for emb in retrieved_embs])
+        gt_stack = torch.stack([to_tensor(emb) for emb in gt_embs])
+        
+        # Try to move to GPU if available
+        if DEVICE != "cpu":
+            try:
+                ret_stack = ret_stack.to(DEVICE)
+                gt_stack = gt_stack.to(DEVICE)
+            except Exception as e:
+                # If GPU operation fails, fall back to CPU silently
+                ret_stack = ret_stack.cpu()
+                gt_stack = gt_stack.cpu()
+        
+        # Calculate similarity matrix
+        similarity_matrix = util.cos_sim(ret_stack, gt_stack)
+        
+        # Check threshold
+        return (similarity_matrix >= threshold).any().item()
+        
+    except Exception as e:
+        # Fallback to original CPU-only implementation
+        print(f"⚠️ GPU similarity calculation failed: {e}, using CPU fallback")
+        ret_stack = torch.stack([to_tensor(emb) for emb in retrieved_embs]).cpu()
+        gt_stack = torch.stack([to_tensor(emb) for emb in gt_embs]).cpu()
+        similarity_matrix = util.cos_sim(ret_stack, gt_stack)
+        return (similarity_matrix >= threshold).any().item()
 
 # Global functions for multiprocessing
 def process_chunk_global(chunk_data, threshold=0.8):
@@ -266,32 +317,54 @@ async def async_semantic_mrr(df, retrieved_col='retrieved_contexts', ground_trut
     return df['semantic_rr'].mean()
 
 def vectorized_semantic_mrr(retrieved_embs, gt_embs, threshold=0.8):
-    """Vectorized MRR calculation"""
+    """Vectorized MRR calculation with GPU support"""
     if len(retrieved_embs) == 0 or len(gt_embs) == 0:
         return 0.0
     
-    # Convert to tensors if they're numpy arrays
-    def to_tensor(emb):
-        if isinstance(emb, np.ndarray):
-            return torch.from_numpy(emb)
-        elif isinstance(emb, torch.Tensor):
-            return emb
-        else:
-            return torch.tensor(emb)
-    
-    # Stack embeddings
-    ret_stack = torch.stack([to_tensor(emb) for emb in retrieved_embs])
-    gt_stack = torch.stack([to_tensor(emb) for emb in gt_embs])
-    
-    # Calculate similarity matrix
-    similarity_matrix = util.cos_sim(ret_stack, gt_stack)
-    
-    # Find first position where similarity >= threshold
-    for i in range(len(retrieved_embs)):
-        if (similarity_matrix[i] >= threshold).any():
-            return 1.0 / (i + 1)
-    
-    return 0.0
+    try:
+        # Convert to tensors if they're numpy arrays
+        def to_tensor(emb):
+            if isinstance(emb, np.ndarray):
+                return torch.from_numpy(emb)
+            elif isinstance(emb, torch.Tensor):
+                return emb
+            else:
+                return torch.tensor(emb)
+        
+        # Stack embeddings and move to device
+        ret_stack = torch.stack([to_tensor(emb) for emb in retrieved_embs])
+        gt_stack = torch.stack([to_tensor(emb) for emb in gt_embs])
+        
+        # Try to move to GPU if available
+        if DEVICE != "cpu":
+            try:
+                ret_stack = ret_stack.to(DEVICE)
+                gt_stack = gt_stack.to(DEVICE)
+            except Exception as e:
+                # If GPU operation fails, fall back to CPU silently
+                ret_stack = ret_stack.cpu()
+                gt_stack = gt_stack.cpu()
+        
+        # Calculate similarity matrix
+        similarity_matrix = util.cos_sim(ret_stack, gt_stack)
+        
+        # Find first position where similarity >= threshold
+        for i in range(len(retrieved_embs)):
+            if (similarity_matrix[i] >= threshold).any():
+                return 1.0 / (i + 1)
+        
+        return 0.0
+        
+    except Exception as e:
+        # Fallback to original CPU-only implementation
+        print(f"⚠️ GPU MRR calculation failed: {e}, using CPU fallback")
+        ret_stack = torch.stack([to_tensor(emb) for emb in retrieved_embs]).cpu()
+        gt_stack = torch.stack([to_tensor(emb) for emb in gt_embs]).cpu()
+        similarity_matrix = util.cos_sim(ret_stack, gt_stack)
+        for i in range(len(retrieved_embs)):
+            if (similarity_matrix[i] >= threshold).any():
+                return 1.0 / (i + 1)
+        return 0.0
 
 def parallel_semantic_mrr(df, retrieved_col='retrieved_contexts', ground_truth_col='reference_contexts', threshold=0.8, n_jobs=-1):
     """Parallel version của semantic MRR calculation"""
