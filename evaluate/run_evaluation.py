@@ -5,24 +5,23 @@ import os
 import sys
 import time
 
+import mlflow
 import pandas as pd
+import qdrant_client
+from dotenv import find_dotenv, load_dotenv
 from prepare_documents import process_all_pdfs_in_folder
 
 # append project dir
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from collections import defaultdict
-
-from langchain.docstore.document import Document as LangchainDocument
 
 from configs.config import *
 from libs.common import *
 from utils.format_utils import *
 
 # from utils.extract_tables import full_pipeline
-from utils.rag_evaluation_optimized import *
-from utils.rag_qdrant_utils import *
-from utils.reranker_utils_optimized import *
+from utils.rag_evaluation_optimized import plot_experiment_comparison, run_ragas_eval
+from utils.rag_qdrant_utils import QdrantRAG
+from utils.reranker_utils_optimized import Reranker
 
 load_dotenv(find_dotenv())
 
@@ -142,8 +141,7 @@ async def main(args):
     # create qdrant client
     client = qdrant_client.QdrantClient(
         path=f"{path_to_save}/qdrant_client_memory",
-    )
-
+    )    
     COLLECTION_NAME = f"exp_{hybrid_flag}_cs{chunk_size}_co{chunk_overlap}_nd{num_docs}_{embedding_name}_{chunk_type}_{reranker_flag}"
     print(f"Collection name: {COLLECTION_NAME}")
 
@@ -158,7 +156,7 @@ async def main(args):
             print(
                 f"Collection {COLLECTION_NAME} already exists, skipping document addition"
             )
-
+    start_time = time.time()
     # Only add documents if collection doesn't exist or was recreated
     if not collection_exists:
         # Prepare evaluation data
@@ -232,7 +230,8 @@ async def main(args):
     else:
         # Collection exists, just initialize QdrantRAG
         exp = QdrantRAG(client=client)
-
+    end_time = time.time()
+    add_document_time = end_time - start_time
     # run evaluation (always run this part)
     # load eval df
     with open(qa_path, "r", encoding="utf-8") as f:
@@ -248,7 +247,7 @@ async def main(args):
     reranker_function = (
         None if not reranker_model_name else Reranker(method=reranker_model_name)
     )
-
+    start_time = time.time()
     ex: pd.DataFrame = run_ragas_eval(
         eval_df,
         collection_name=COLLECTION_NAME,
@@ -258,44 +257,142 @@ async def main(args):
         reranker_function=reranker_function,
         path=os.path.join(path_to_save, COLLECTION_NAME) + ".csv",
         use_optimized_metrics=True,
-        max_concurrent_requests=5  # Reduced from 20 to prevent RAM overflow
+        max_concurrent_requests=5,  # Reduced from 20 to prevent RAM overflow
     )
+    end_time = time.time()
+    eval_time = end_time - start_time
     print(f"✅ Successfully ran evaluation for {COLLECTION_NAME}")
-    print(ex.head())
+    
+    context_precision = ex['context_precision'].mean()
+    context_recall = ex['context_recall'].mean()
+    hit_rate = ex['hit_rate'].mean()
+    mrr = ex['mrr'].mean()
 
-    return ex
+    return {
+        "exp": ex,
+        "add_document_time": add_document_time,
+        "eval_time": eval_time,
+        "context_precision": context_precision,
+        "context_recall": context_recall,
+        "hit_rate": hit_rate,
+        "mrr": mrr,
+    }
 
 
 if __name__ == "__main__":
+    # Set MLFlow tracking URI
+    mlflow.set_tracking_uri("file:./mlruns")
+    mlflow.set_experiment("RAG_Evaluation_Experiments")
+    
+    # Define different configurations to test
+    configs = [
+        # Base configuration
+        Args(
+            pdf_folder=f"{data_dir}/QA_tables/pdf",
+            qa_path=f"{data_dir}/QA_tables/fixed_label_QA.json",
+            chunk_size=512,
+            chunk_overlap=128,
+            num_docs=7,
+            embedding_model_name="BAAI/bge-base-en",
+            chunk_type="character",
+            hybrid_search=False,
+            reranker_model_name=None,
+            path_to_save=f"{exps_dir}/",
+            force_create=False,
+        ),
+        # Hybrid search configuration
+        Args(
+            pdf_folder=f"{data_dir}/QA_tables/pdf",
+            qa_path=f"{data_dir}/QA_tables/fixed_label_QA.json",
+            chunk_size=512,
+            chunk_overlap=128,
+            num_docs=5,
+            embedding_model_name="BAAI/bge-base-en",
+            chunk_type="character",
+            hybrid_search=False,
+            reranker_model_name=None,
+            path_to_save=f"{exps_dir}/",
+            force_create=False,
+        ),
+    ]
+    
+    # You can also parse args instead of using predefined configs
     # args = parse_args()
-    args = Args(
-        pdf_folder=f"{data_dir}/QA_tables/pdf",
-        qa_path=f"{data_dir}/QA_tables/fixed_label_QA.json",
-        chunk_size=512,
-        chunk_overlap=128,
-        num_docs=7,
-        embedding_model_name="BAAI/bge-base-en",
-        chunk_type="character",
-        hybrid_search=True,
-        reranker_model_name=None,
-        path_to_save=f"{exps_dir}/",
-        force_create=False,
-    )  # for testing
-    start_time = time.time()
-    ex = asyncio.run(main(args))
-    end_time = time.time()
-
-    print(f"Time taken: {end_time - start_time} seconds")
-
-    # plot comparison with error handling
-    if ex is not None and not ex.empty:
-        try:
-            plot_experiment_comparison(
-                experiment_results_list=[ex],
-                experiment_names=["test_exp"],
-                metrics_to_plot=["context_precision", "context_recall", "hit_rate", "mrr"],
-            )
-        except Exception as e:
-            print(f"Warning: Could not generate plot: {e}")
-    else:
-        print("Warning: No evaluation results to plot")
+    # configs = [args]
+    
+    for i, args in enumerate(configs):
+        with mlflow.start_run(run_name=f"RAG_Eval_Run_{i+1}"):
+            print(f"\n🚀 Starting MLFlow Run {i+1}/{len(configs)}")
+            print("=" * 60)
+            
+            # Log parameters (config)
+            mlflow.log_param("pdf_folder", args.pdf_folder)
+            mlflow.log_param("qa_path", args.qa_path)
+            mlflow.log_param("chunk_size", args.chunk_size)
+            mlflow.log_param("chunk_overlap", args.chunk_overlap)
+            mlflow.log_param("num_docs", args.num_docs)
+            mlflow.log_param("embedding_model_name", args.embedding_model_name)
+            mlflow.log_param("chunk_type", args.chunk_type)
+            mlflow.log_param("hybrid_search", args.hybrid_search)
+            mlflow.log_param("reranker_model_name", args.reranker_model_name or "None")
+            mlflow.log_param("force_create", args.force_create)
+            
+            # Log derived parameters
+            hybrid_flag = "hybrid" if args.hybrid_search else "base"
+            reranker_flag = args.reranker_model_name if args.reranker_model_name else "NoneReranker"
+            embedding_name = args.embedding_model_name.split("/")[-1] if "/" in args.embedding_model_name else args.embedding_model_name
+            
+            mlflow.log_param("hybrid_flag", hybrid_flag)
+            mlflow.log_param("reranker_flag", reranker_flag)
+            mlflow.log_param("embedding_name", embedding_name)
+            
+            # Create collection name and log it
+            collection_name = f"exp_{hybrid_flag}_cs{args.chunk_size}_co{args.chunk_overlap}_nd{args.num_docs}_{embedding_name}_{args.chunk_type}_{reranker_flag}"
+            mlflow.log_param("collection_name", collection_name)
+            
+            try:
+                # Run the main evaluation
+                result = asyncio.run(main(args))
+                
+                # Log metrics
+                mlflow.log_metric("add_document_time", result['add_document_time'])
+                mlflow.log_metric("eval_time", result['eval_time'])
+                mlflow.log_metric("total_time", result['add_document_time'] + result['eval_time'])
+                mlflow.log_metric("context_precision", result['context_precision'])
+                mlflow.log_metric("context_recall", result['context_recall'])
+                mlflow.log_metric("hit_rate", result['hit_rate'])
+                mlflow.log_metric("mrr", result['mrr'])
+                
+                # Calculate composite metrics
+                f1_score = 2 * (result['context_precision'] * result['context_recall']) / (result['context_precision'] + result['context_recall']) if (result['context_precision'] + result['context_recall']) > 0 else 0
+                mlflow.log_metric("f1_score", f1_score)
+                
+                # Log artifacts (save CSV results)
+                csv_path = os.path.join(args.path_to_save, collection_name + ".csv")
+                if os.path.exists(csv_path):
+                    mlflow.log_artifact(csv_path)
+                
+                # Print results
+                print(f"📊 Results for Run {i+1}:")
+                print(f"   Add Document Time: {result['add_document_time']:.2f}s")
+                print(f"   Eval Time: {result['eval_time']:.2f}s")
+                print(f"   Total Time: {result['add_document_time'] + result['eval_time']:.2f}s")
+                print(f"   Context Precision: {result['context_precision']:.4f}")
+                print(f"   Context Recall: {result['context_recall']:.4f}")
+                print(f"   F1 Score: {f1_score:.4f}")
+                print(f"   Hit Rate: {result['hit_rate']:.4f}")
+                print(f"   MRR: {result['mrr']:.4f}")
+                
+                mlflow.log_param("status", "success")
+                print(f"✅ Successfully completed Run {i+1}")
+                
+            except Exception as e:
+                # Log error information
+                mlflow.log_param("status", "failed")
+                mlflow.log_param("error_message", str(e))
+                print(f"❌ Run {i+1} failed with error: {e}")
+                raise
+    
+    print(f"\n🎉 Completed all {len(configs)} runs!")
+    print("📈 Check MLFlow UI with: mlflow ui")
+    print("🔗 Then visit: http://localhost:5000")
