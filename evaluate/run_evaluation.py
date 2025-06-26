@@ -20,9 +20,9 @@ from libs.common import *
 from utils.format_utils import *
 
 # from utils.extract_tables import full_pipeline
-from utils.rag_evaluation import *
+from utils.rag_evaluation_optimized import *
 from utils.rag_qdrant_utils import *
-from utils.reranker_utils import *
+from utils.reranker_utils_optimized import *
 
 load_dotenv(find_dotenv())
 
@@ -148,86 +148,92 @@ async def main(args):
     print(f"Collection name: {COLLECTION_NAME}")
 
     # check if collection exists and handle force_create
-    if client.collection_exists(COLLECTION_NAME):
+    collection_exists = client.collection_exists(COLLECTION_NAME)
+    if collection_exists:
         if force_create:
             print(f"Force creating: Deleting existing collection {COLLECTION_NAME}")
             client.delete_collection(COLLECTION_NAME)
+            collection_exists = False
         else:
             print(
-                f"Collection {COLLECTION_NAME} already exists, pass the add documents step"
+                f"Collection {COLLECTION_NAME} already exists, skipping document addition"
             )
-            return
 
-    # Prepare evaluation data
-    if (
-        global_documents["page_documents"] == []
-        or global_documents["table_documents"] == []
-    ):
-        all_page_documents, all_table_documents = await process_all_pdfs_in_folder(
-            pdf_folder, qa_path
-        )
-        global_documents["page_documents"] = all_page_documents
-        global_documents["table_documents"] = all_table_documents
-    else:
-        all_page_documents = global_documents["page_documents"]
-        all_table_documents = global_documents["table_documents"]
-
-    exp = QdrantRAG(client=client)
-
-    # add documents to qdrant with error handling
-    print("Adding documents to qdrant...")
-    try:
-        if hybrid_search:
-            exp.add_documents_hybrid(
-                collection_name=COLLECTION_NAME,
-                documents=all_page_documents,
-                tables=all_table_documents,
-                chunk_type=chunk_type,
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-                embedding_model_name=embedding_model_name,
+    # Only add documents if collection doesn't exist or was recreated
+    if not collection_exists:
+        # Prepare evaluation data
+        if (
+            global_documents["page_documents"] == []
+            or global_documents["table_documents"] == []
+        ):
+            all_page_documents, all_table_documents = await process_all_pdfs_in_folder(
+                pdf_folder, qa_path
             )
+            global_documents["page_documents"] = all_page_documents
+            global_documents["table_documents"] = all_table_documents
         else:
-            exp.add_documents(
-                collection_name=COLLECTION_NAME,
-                documents=all_page_documents,
-                tables=all_table_documents,
-                chunk_size=chunk_size,
-                chunk_type=chunk_type,
-                chunk_overlap=chunk_overlap,
-                embedding_model_name=embedding_model_name,
+            all_page_documents = global_documents["page_documents"]
+            all_table_documents = global_documents["table_documents"]
+
+        exp = QdrantRAG(client=client)
+
+        # add documents to qdrant with error handling
+        print("Adding documents to qdrant...")
+        try:
+            if hybrid_search:
+                exp.add_documents_hybrid(
+                    collection_name=COLLECTION_NAME,
+                    documents=all_page_documents,
+                    tables=all_table_documents,
+                    chunk_type=chunk_type,
+                    chunk_size=chunk_size,
+                    chunk_overlap=chunk_overlap,
+                    embedding_model_name=embedding_model_name,
+                )
+            else:
+                exp.add_documents(
+                    collection_name=COLLECTION_NAME,
+                    documents=all_page_documents,
+                    tables=all_table_documents,
+                    chunk_size=chunk_size,
+                    chunk_type=chunk_type,
+                    chunk_overlap=chunk_overlap,
+                    embedding_model_name=embedding_model_name,
+                )
+
+            print(f"✅ Successfully added documents to collection {COLLECTION_NAME}")
+
+        except KeyboardInterrupt:
+            print(
+                f"\n⚠️  KeyboardInterrupt detected! Cleaning up incomplete collection {COLLECTION_NAME}"
             )
+            try:
+                if client.collection_exists(COLLECTION_NAME):
+                    client.delete_collection(COLLECTION_NAME)
+                    print(
+                        f"✅ Successfully deleted incomplete collection {COLLECTION_NAME}"
+                    )
+            except Exception as cleanup_error:
+                print(f"❌ Error during cleanup: {cleanup_error}")
+            raise  # Re-raise the KeyboardInterrupt
 
-        print(f"✅ Successfully added documents to collection {COLLECTION_NAME}")
+        except Exception as e:
+            print(f"\n❌ Error occurred while adding documents: {e}")
+            print(f"⚠️  Cleaning up incomplete collection {COLLECTION_NAME}")
+            try:
+                if client.collection_exists(COLLECTION_NAME):
+                    client.delete_collection(COLLECTION_NAME)
+                    print(
+                        f"✅ Successfully deleted incomplete collection {COLLECTION_NAME}"
+                    )
+            except Exception as cleanup_error:
+                print(f"❌ Error during cleanup: {cleanup_error}")
+            raise  # Re-raise the original exception
+    else:
+        # Collection exists, just initialize QdrantRAG
+        exp = QdrantRAG(client=client)
 
-    except KeyboardInterrupt:
-        print(
-            f"\n⚠️  KeyboardInterrupt detected! Cleaning up incomplete collection {COLLECTION_NAME}"
-        )
-        try:
-            if client.collection_exists(COLLECTION_NAME):
-                client.delete_collection(COLLECTION_NAME)
-                print(
-                    f"✅ Successfully deleted incomplete collection {COLLECTION_NAME}"
-                )
-        except Exception as cleanup_error:
-            print(f"❌ Error during cleanup: {cleanup_error}")
-        raise  # Re-raise the KeyboardInterrupt
-
-    except Exception as e:
-        print(f"\n❌ Error occurred while adding documents: {e}")
-        print(f"⚠️  Cleaning up incomplete collection {COLLECTION_NAME}")
-        try:
-            if client.collection_exists(COLLECTION_NAME):
-                client.delete_collection(COLLECTION_NAME)
-                print(
-                    f"✅ Successfully deleted incomplete collection {COLLECTION_NAME}"
-                )
-        except Exception as cleanup_error:
-            print(f"❌ Error during cleanup: {cleanup_error}")
-        raise  # Re-raise the original exception
-
-    # run evaluation
+    # run evaluation (always run this part)
     # load eval df
     with open(qa_path, "r", encoding="utf-8") as f:
         eval_data = json.load(f)
@@ -250,8 +256,9 @@ async def main(args):
         embedding_model_name=embedding_model_name,
         num_docs=num_docs,
         reranker_function=reranker_function,
-        path=os.path.join(path_to_save, COLLECTION_NAME),
+        path=os.path.join(path_to_save, COLLECTION_NAME) + ".csv",
         use_optimized_metrics=True,
+        max_concurrent_requests=5  # Reduced from 20 to prevent RAM overflow
     )
     print(f"✅ Successfully ran evaluation for {COLLECTION_NAME}")
     print(ex.head())
@@ -269,7 +276,7 @@ if __name__ == "__main__":
         num_docs=7,
         embedding_model_name="BAAI/bge-base-en",
         chunk_type="character",
-        hybrid_search=False,
+        hybrid_search=True,
         reranker_model_name=None,
         path_to_save=f"{exps_dir}/",
         force_create=False,
@@ -280,9 +287,15 @@ if __name__ == "__main__":
 
     print(f"Time taken: {end_time - start_time} seconds")
 
-    # plot comparison
-    plot_experiment_comparison(
-        experiment_results_list=[ex],
-        experiment_names=["test_exp"],
-        metrics_to_plot=["context_precision", "context_recall", "hit_rate", "mrr"],
-    )
+    # plot comparison with error handling
+    if ex is not None and not ex.empty:
+        try:
+            plot_experiment_comparison(
+                experiment_results_list=[ex],
+                experiment_names=["test_exp"],
+                metrics_to_plot=["context_precision", "context_recall", "hit_rate", "mrr"],
+            )
+        except Exception as e:
+            print(f"Warning: Could not generate plot: {e}")
+    else:
+        print("Warning: No evaluation results to plot")
