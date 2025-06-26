@@ -8,13 +8,19 @@ import torch
 
 def get_device():
     if torch.cuda.is_available():
-        return "cuda"
+        device = "cuda"
+        print(f"[Device Info] Using CUDA device: {torch.cuda.get_device_name()}")
+        print(f"[Device Info] CUDA Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+        return device
     elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        print("[Device Info] Using Apple Silicon MPS device")
         return "mps"  # Apple Silicon
     else:
+        print("[Device Info] Using CPU device")
         return "cpu"
 
 DEVICE = get_device()
+print(f"[Reranker] Global device set to: {DEVICE}")
 
 # === Constants ===
 JINA_MODEL = "jina-colbert-v1-en"
@@ -114,8 +120,39 @@ class Reranker:
 
     def bce_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
         if self._bce_model is None:
-            from BCEmbedding import RerankerModel
-            self._bce_model = RerankerModel("maidalun1020/bce-reranker-base_v1", use_fp16=True, device=DEVICE)
+            try:
+                from BCEmbedding import RerankerModel
+                import torch
+                
+                # Multiple approaches to fix meta tensor issue
+                try:
+                    # Approach 1: Load on CPU first, then move manually
+                    self._bce_model = RerankerModel(
+                        "maidalun1020/bce-reranker-base_v1", 
+                        use_fp16=True, 
+                        device="cpu"  # Force CPU first
+                    )
+                    # Manually move to target device after loading
+                    if DEVICE != "cpu" and hasattr(self._bce_model, 'model'):
+                        # Use to_empty for meta tensors
+                        if any(param.is_meta for param in self._bce_model.model.parameters()):
+                            print("[BCE Reranker] Detected meta tensors, using to_empty()")
+                            self._bce_model.model = self._bce_model.model.to_empty(device=DEVICE)
+                        else:
+                            self._bce_model.model = self._bce_model.model.to(DEVICE)
+                except Exception as approach1_error:
+                    print(f"[BCE Reranker] Approach 1 failed: {approach1_error}")
+                    # Approach 2: Force CPU only mode
+                    print("[BCE Reranker] Falling back to CPU-only mode")
+                    self._bce_model = RerankerModel(
+                        "maidalun1020/bce-reranker-base_v1", 
+                        use_fp16=False,  # Disable FP16 for CPU
+                        device="cpu"
+                    )
+                    
+            except Exception as init_error:
+                print(f"[BCE Reranker] All initialization approaches failed: {init_error}")
+                return documents[:top_k]
         
         try:
             rerank_input = [(query, doc) for doc in documents]
@@ -157,12 +194,31 @@ class Reranker:
         
     def pretrained_bge_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
         if self._colbert_model is None:
-            from FlagEmbedding import FlagAutoReranker
-            self._colbert_model = FlagAutoReranker.from_finetuned(
-                model_name_or_path="BAAI/bge-reranker-v2-minicpm-layerwise",
-                max_length=512,
-                devices=DEVICE
-            )
+            try:
+                from FlagEmbedding import FlagAutoReranker
+                import torch
+                
+                # Try to avoid meta tensor issues with FlagAutoReranker
+                try:
+                    # First try with explicit device specification
+                    self._colbert_model = FlagAutoReranker.from_finetuned(
+                        model_name_or_path="BAAI/bge-reranker-v2-minicpm-layerwise",
+                        max_length=512,
+                        devices=[DEVICE] if DEVICE != "cpu" else "cpu"  # Pass as list for GPU or string for CPU
+                    )
+                except Exception as device_error:
+                    print(f"[BGE Reranker] Device-specific loading failed: {device_error}")
+                    # Fallback to CPU
+                    print("[BGE Reranker] Falling back to CPU mode")
+                    self._colbert_model = FlagAutoReranker.from_finetuned(
+                        model_name_or_path="BAAI/bge-reranker-v2-minicpm-layerwise",
+                        max_length=512,
+                        devices="cpu"
+                    )
+                    
+            except Exception as init_error:
+                print(f"[BGE Reranker] Initialization failed: {init_error}")
+                return documents[:top_k]
         
         try:
             pairs = [(query, doc) for doc in documents]
