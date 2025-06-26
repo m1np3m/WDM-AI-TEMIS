@@ -134,7 +134,7 @@ def plot_experiment_comparison(experiment_results_list, experiment_names, metric
     ax.tick_params(axis='x', rotation=45)
 
     for container in ax.containers:
-        ax.bar_label(container, fmt="%.3f", rotation=90)
+        ax.bar_label(container, fmt="%.2f", rotation=60)
 
     plt.tight_layout()
     plt.show()
