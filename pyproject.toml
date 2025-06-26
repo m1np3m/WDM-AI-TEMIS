@@ -1,0 +1,60 @@
+[project]
+name = "multimodal-rag-baseline"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = "=3.10"
+dependencies = [
+    "amazon-textract-helper>=0.0.34",
+    "amazon-textract-response-parser>=1.0.3",
+    "bcembedding>=0.1.3",
+    "camelot-py>=1.0.0",
+    "cohere>=5.15.0",
+    "docling>=2.15.1",
+    "docling-core>=2.30.1",
+    "dotenv>=0.9.9",
+    "fastembed>=0.7.0",
+    "fitz>=0.0.1.dev2",
+    "flagembedding>=1.3.5",
+    "flashrank>=0.2.10",
+    "frontend>=0.0.3",
+    "gmft>=0.4.1",
+    "google>=3.0.0",
+    "google-genai>=1.15.0",
+    "ipykernel>=6.29.5",
+    "ipywidgets>=8.1.7",
+    "jupyter>=1.1.1",
+    "langchain>=0.3.25",
+    "langchain-community>=0.3.24",
+    "langchain-core>=0.3.60",
+    "langchain-experimental>=0.3.4",
+    "langchain-google-genai>=2.1.4",
+    "langchain-huggingface>=0.2.0",
+    "langchain-milvus>=0.1.10",
+    "langchain-openai>=0.3.18",
+    "langchain-qdrant>=0.2.0",
+    "langgraph>=0.4.4",
+    "llama-index>=0.10.9",
+    "loguru>=0.7.3",
+    "mixedbread>=0.8.1",
+    "mlflow>=3.1.1",
+    "numpy>=2.2.5",
+    "pandas>=2.2.3",
+    "pdfplumber>=0.11.6",
+    "pdftext>=0.6.2",
+    "pymupdf>=1.26.0",
+    "python-levenshtein>=0.27.1",
+    "qdrant-client>=1.14.3",
+    "ragas>=0.2.15",
+    "reportlab>=4.4.1",
+    "streamlit>=1.46.0",
+    "tesseract>=0.1.3",
+    "together>=1.3.14",
+    "tools>=1.0.2",
+    "unstructured[all-docs]>=0.17.2",
+]
+
+[tool.uv.workspace]
+members = [
+    "WDM-AI-TEMIS",
+]
