@@ -90,6 +90,11 @@ def parse_args():
 
 def get_collection_name(args):
     hybrid_flag = "hybrid" if args.hybrid_search else "base"
+    embedding_name = args.embedding_model_name.split("/")[-1] if "/" in args.embedding_model_name else args.embedding_model_name
+    return f"exp_{hybrid_flag}_cs{args.chunk_size}_co{args.chunk_overlap}_{embedding_name}_{args.chunk_type}"
+
+def get_experiment_name(args):
+    hybrid_flag = "hybrid" if args.hybrid_search else "base"
     reranker_flag = args.reranker_model_name if args.reranker_model_name else "NoneReranker"
     embedding_name = args.embedding_model_name.split("/")[-1] if "/" in args.embedding_model_name else args.embedding_model_name
     return f"exp_{hybrid_flag}_cs{args.chunk_size}_co{args.chunk_overlap}_nd{args.num_docs}_{embedding_name}_{args.chunk_type}_{reranker_flag}"
@@ -275,7 +280,7 @@ async def main(args):
         embedding_model_name=embedding_model_name,
         num_docs=num_docs,
         reranker_function=reranker_function,
-        path=os.path.join(path_to_save, COLLECTION_NAME) + ".csv",
+        path=os.path.join(path_to_save, get_experiment_name(args)) + ".csv",
         use_optimized_metrics=True,
         max_concurrent_requests=5,  # Reduced from 20 to prevent RAM overflow
     )
@@ -369,7 +374,8 @@ if __name__ == "__main__":
     
     for i, args in enumerate(configs):
         collection_name = get_collection_name(args)
-        with mlflow.start_run(run_name=collection_name):
+        experiment_name = get_experiment_name(args)
+        with mlflow.start_run(run_name=experiment_name):
             print(f"\n🚀 Starting MLFlow Run {i+1}/{len(configs)}")
             print("=" * 60)
             
@@ -394,8 +400,9 @@ if __name__ == "__main__":
             mlflow.log_param("reranker_flag", reranker_flag)
             mlflow.log_param("embedding_name", embedding_name)
             
-            # Create collection name and log it
+            # Create collection name and experiment name, and log them
             mlflow.log_param("collection_name", collection_name)
+            mlflow.log_param("experiment_name", experiment_name)
             
             try:
                 # Run the main evaluation
@@ -429,7 +436,7 @@ if __name__ == "__main__":
                 mlflow.log_metric("f1_score", f1_score)
                 
                 # Log artifacts (save CSV results)
-                csv_path = os.path.join(args.path_to_save, collection_name + ".csv")
+                csv_path = os.path.join(args.path_to_save, experiment_name + ".csv")
                 if os.path.exists(csv_path):
                     mlflow.log_artifact(csv_path)
                 

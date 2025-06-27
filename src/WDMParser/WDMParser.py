@@ -155,6 +155,7 @@ class WDMPDFParser:
         documents: List[Document] = [
             Document(
                 page_content=convert_table2text(table),
+                # page_content=table['text'],
                 metadata={
                     "page": str(table["page"]) if isinstance(table["page"], int) else ",".join(map(str, table["page"])),
                     "source": table["source"],
