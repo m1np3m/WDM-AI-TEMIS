@@ -42,7 +42,8 @@ from FlagEmbedding import FlagAutoReranker
 colbert_model = FlagAutoReranker.from_finetuned(
     model_name_or_path="BAAI/bge-reranker-v2-minicpm-layerwise",
     max_length=512,
-    devices=DEVICE
+    device=DEVICE,
+    use_fp16=False
 )
 
 # === Flashrank ===
@@ -115,7 +116,7 @@ class Reranker:
                 top_k=top_k,
                 return_input=True
             )
-            return [doc.input for doc in response.data]
+            return [str(doc.input) if doc.input is not None else "" for doc in response.data]
         except Exception as e:
             print(f"[Mixedbread Reranker] Error: {e}")
             return documents[:top_k]
@@ -169,7 +170,15 @@ class Reranker:
             pairs = [(query, doc) for doc in documents]
             scores = colbert_model.compute_score(pairs, normalize=True)
             if scores is not None:
-                ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
+                # Convert scores to float32 if they're in half precision
+                import torch
+                import numpy as np
+                if hasattr(scores, 'dtype'):
+                    if torch.is_tensor(scores) and scores.dtype == torch.float16:
+                        scores = scores.float()
+                    elif isinstance(scores, np.ndarray) and scores.dtype == np.float16:
+                        scores = scores.astype(np.float32)
+                ranked = sorted(zip(documents, scores), key=lambda x: float(x[1]), reverse=True)
                 return [doc for doc, _ in ranked[:top_k]]
             else:
                 return documents[:top_k]
