@@ -24,12 +24,12 @@ JINA_URL = "https://api.jina.ai/v1/rerank"
 # === Mixedbread ===
 from mixedbread import Mixedbread
 
-mxbai = Mixedbread(api_key=os.getenv("MXBAI_API_KEY"))
+mxbai = Mixedbread(api_key=os.getenv("MXBAI_API_KEY", ""))
 
 # === Cohere ===
 import cohere
 
-co = cohere.Client(os.getenv("COHERE_KEY"))
+co = cohere.Client(os.getenv("COHERE_KEY", ""))
 
 # === BCE ===
 from BCEmbedding import RerankerModel
@@ -90,7 +90,7 @@ class Reranker:
     def jina_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {os.getenv('JINA_API_KEY')}",
+            "Authorization": f"Bearer {os.getenv('JINA_API_KEY', '')}",
         }
         data = {
             "model": JINA_MODEL,
@@ -166,10 +166,13 @@ class Reranker:
         
     def pretrained_bge_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
         try:
-            pairs = [[query, doc] for doc in documents]
+            pairs = [(query, doc) for doc in documents]
             scores = colbert_model.compute_score(pairs, normalize=True)
-            ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
-            return [doc for doc, _ in ranked[:top_k]]
+            if scores is not None:
+                ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
+                return [doc for doc, _ in ranked[:top_k]]
+            else:
+                return documents[:top_k]
         except Exception as e:
             print(f"[BGE Reranker] Error: {e}")
             return documents[:top_k]
@@ -180,6 +183,7 @@ class Reranker:
             # scores = bge_model.compute_score(pairs, normalize=True)
             # ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
             # return [doc for doc, _ in ranked[:top_k]]
+            return documents[:top_k]  # Return fallback when commented out
         except Exception as e:
             print(f"[BGE Reranker] Error: {e}")
             return documents[:top_k]
