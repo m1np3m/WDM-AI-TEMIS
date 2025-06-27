@@ -182,7 +182,7 @@ class QdrantRAG:
 
     def get_documents_hybrid(self, collection_name, query, embedding_model_name, 
                         num_documents=5, reranker: Optional[Callable] = None,
-                        retrieval_k=None):  # Thêm parameter mới
+                        ):  # Thêm parameter mới
         dense_embeddings = FastEmbedEmbeddings(model_name=embedding_model_name)
         sparse_embeddings = FastEmbedSparse(model_name="Qdrant/bm25")
 
@@ -198,15 +198,14 @@ class QdrantRAG:
 
         # ✅ QUAN TRỌNG: Retrieve số lượng lớn hơn cho reranker
         if reranker:
-            retrieval_k = retrieval_k or (num_documents * 3)  # Retrieve 3x documents cho reranker
+            retrieval_k = (num_documents * 3)  # Retrieve 3x documents cho reranker
             raw_results = vectorstore.similarity_search(query, k=retrieval_k)
+            documents = [doc.page_content for doc in raw_results]
+            documents = reranker.rerank(query, documents, top_k=num_documents)
         else:
             raw_results = vectorstore.similarity_search(query, k=num_documents)
-        
-        documents = [doc.page_content for doc in raw_results]
+            documents = [doc.page_content for doc in raw_results]
 
-        if reranker:
-            documents = reranker.rerank(query, documents, top_k=num_documents)
 
         return documents[:num_documents]
 
