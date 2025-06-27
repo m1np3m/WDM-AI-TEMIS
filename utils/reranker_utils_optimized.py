@@ -5,42 +5,66 @@ import time
 from typing import Callable, List, Optional
 import requests
 import torch
+from .bge_finetune import BGEv2m3Reranker
 
 def get_device():
     if torch.cuda.is_available():
-        device = "cuda"
-        print(f"[Device Info] Using CUDA device: {torch.cuda.get_device_name()}")
-        print(f"[Device Info] CUDA Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
-        return device
+        return "cuda"
     elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-        print("[Device Info] Using Apple Silicon MPS device")
         return "mps"  # Apple Silicon
     else:
-        print("[Device Info] Using CPU device")
         return "cpu"
 
 DEVICE = get_device()
-print(f"[Reranker] Global device set to: {DEVICE}")
 
-# === Constants ===
+# === Jina ===
 JINA_MODEL = "jina-colbert-v1-en"
 JINA_URL = "https://api.jina.ai/v1/rerank"
 
+# === Mixedbread ===
+from mixedbread import Mixedbread
+
+mxbai = Mixedbread(api_key=os.getenv("MXBAI_API_KEY"))
+
+# === Cohere ===
+import cohere
+
+co = cohere.Client(os.getenv("COHERE_KEY"))
+
+# === BCE ===
+from BCEmbedding import RerankerModel
+
+bce_model = RerankerModel("maidalun1020/bce-reranker-base_v1", use_fp16=True, device=DEVICE)
+
+# === FlagEmbedding ColBERT ===
+from FlagEmbedding import FlagAutoReranker
+
+colbert_model = FlagAutoReranker.from_finetuned(
+    model_name_or_path="BAAI/bge-reranker-v2-minicpm-layerwise",
+    max_length=512,
+    devices=DEVICE
+)
+
+# === Flashrank ===
+from flashrank import Ranker, RerankRequest
+
+flashrank_model = Ranker(model_name="ms-marco-MiniLM-L-12-v2", max_length=512)
+
+# === Sentence Transformers ===
+from sentence_transformers import CrossEncoder
+
+st_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+# === BGE reranker ===
+# bge_model = BGEv2m3Reranker(
+#     model_path=os.getenv("BGEV3_RE_RANKER_PATH", "src/bge_v2_m3_rerank/bgev2m3_finetune"),
+#     device=DEVICE
+# )
 
 
 class Reranker:
     def __init__(self, method: Optional[str] = None):
         self.method = method
         self.rerank_func = self.get_reranker_by_name(method)
-        
-        # Lazy loading cache for models
-        self._mxbai = None
-        self._cohere_client = None
-        self._bce_model = None
-        self._colbert_model = None
-        self._flashrank_model = None
-        self._st_model = None
-        self._bge_model = None
 
     def rerank(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
         if not self.rerank_func:
@@ -82,31 +106,23 @@ class Reranker:
             print(f"[JINA Reranker] Error: {e}")
             return documents[:top_k]
 
-    def mixedbread_reranker(self, query: str, documents, top_k: int = 5) -> List[str]:
-        if self._mxbai is None:
-            from mixedbread import Mixedbread
-            self._mxbai = Mixedbread(api_key=os.getenv("MXBAI_API_KEY"))
-        
+    def mixedbread_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
         try:
-            response = self._mxbai.rerank(
+            response = mxbai.rerank(
                 model="mixedbread-ai/mxbai-rerank-large-v1",
                 query=query,
                 input=documents,
                 top_k=top_k,
                 return_input=True
             )
-            return [str(doc.input) for doc in response.data if doc.input is not None]
+            return [doc.input for doc in response.data]
         except Exception as e:
             print(f"[Mixedbread Reranker] Error: {e}")
             return documents[:top_k]
 
     def cohere_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
-        if self._cohere_client is None:
-            import cohere
-            self._cohere_client = cohere.Client(os.getenv("COHERE_KEY"))
-        
         try:
-            response = self._cohere_client.rerank(
+            response = co.rerank(
                 model="rerank-english-v3.0",
                 query=query,
                 documents=documents,
@@ -119,44 +135,9 @@ class Reranker:
             return documents[:top_k]
 
     def bce_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
-        if self._bce_model is None:
-            try:
-                from BCEmbedding import RerankerModel
-                import torch
-                
-                # Multiple approaches to fix meta tensor issue
-                try:
-                    # Approach 1: Load on CPU first, then move manually
-                    self._bce_model = RerankerModel(
-                        "maidalun1020/bce-reranker-base_v1", 
-                        use_fp16=True, 
-                        device="cpu"  # Force CPU first
-                    )
-                    # Manually move to target device after loading
-                    if DEVICE != "cpu" and hasattr(self._bce_model, 'model'):
-                        # Use to_empty for meta tensors
-                        if any(param.is_meta for param in self._bce_model.model.parameters()):
-                            print("[BCE Reranker] Detected meta tensors, using to_empty()")
-                            self._bce_model.model = self._bce_model.model.to_empty(device=DEVICE)
-                        else:
-                            self._bce_model.model = self._bce_model.model.to(DEVICE)
-                except Exception as approach1_error:
-                    print(f"[BCE Reranker] Approach 1 failed: {approach1_error}")
-                    # Approach 2: Force CPU only mode
-                    print("[BCE Reranker] Falling back to CPU-only mode")
-                    self._bce_model = RerankerModel(
-                        "maidalun1020/bce-reranker-base_v1", 
-                        use_fp16=False,  # Disable FP16 for CPU
-                        device="cpu"
-                    )
-                    
-            except Exception as init_error:
-                print(f"[BCE Reranker] All initialization approaches failed: {init_error}")
-                return documents[:top_k]
-        
         try:
             rerank_input = [(query, doc) for doc in documents]
-            scores = self._bce_model.compute_score(rerank_input)
+            scores = bce_model.compute_score(rerank_input)
             ranked = sorted(zip(scores, documents), key=lambda x: x[0], reverse=True)
             return [doc for score, doc in ranked[:top_k]]
         except Exception as e:
@@ -164,28 +145,19 @@ class Reranker:
             return documents[:top_k]
 
     def flashrank_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
-        if self._flashrank_model is None:
-            from flashrank import Ranker, RerankRequest
-            self._flashrank_model = Ranker(model_name="ms-marco-MiniLM-L-12-v2", max_length=512)
-        
         try:
-            from flashrank import RerankRequest
             passages = [{"text": doc} for doc in documents]
             request = RerankRequest(query=query, passages=passages)
-            results = self._flashrank_model.rerank(request)
+            results = flashrank_model.rerank(request)
             return [item["text"] for item in results[:top_k]]
         except Exception as e:
             print(f"[Flashrank Reranker] Error: {e}")
             return documents[:top_k]
 
     def st_crossencoder_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
-        if self._st_model is None:
-            from sentence_transformers import CrossEncoder
-            self._st_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-        
         try:
             pairs = [[query, doc] for doc in documents]
-            scores = self._st_model.predict(pairs)
+            scores = st_model.predict(pairs)
             ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
             return [doc for doc, _ in ranked[:top_k]]
         except Exception as e:
@@ -193,61 +165,21 @@ class Reranker:
             return documents[:top_k]
         
     def pretrained_bge_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
-        if self._colbert_model is None:
-            try:
-                from FlagEmbedding import FlagAutoReranker
-                import torch
-                
-                # Try to avoid meta tensor issues with FlagAutoReranker
-                try:
-                    # First try with explicit device specification
-                    self._colbert_model = FlagAutoReranker.from_finetuned(
-                        model_name_or_path="BAAI/bge-reranker-v2-minicpm-layerwise",
-                        max_length=512,
-                        devices=[DEVICE] if DEVICE != "cpu" else "cpu"  # Pass as list for GPU or string for CPU
-                    )
-                except Exception as device_error:
-                    print(f"[BGE Reranker] Device-specific loading failed: {device_error}")
-                    # Fallback to CPU
-                    print("[BGE Reranker] Falling back to CPU mode")
-                    self._colbert_model = FlagAutoReranker.from_finetuned(
-                        model_name_or_path="BAAI/bge-reranker-v2-minicpm-layerwise",
-                        max_length=512,
-                        devices="cpu"
-                    )
-                    
-            except Exception as init_error:
-                print(f"[BGE Reranker] Initialization failed: {init_error}")
-                return documents[:top_k]
-        
         try:
-            pairs = [(query, doc) for doc in documents]
-            scores = self._colbert_model.compute_score(pairs, normalize=True)
-            if scores is not None:
-                ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
-                return [doc for doc, _ in ranked[:top_k]]
-            else:
-                return documents[:top_k]
+            pairs = [[query, doc] for doc in documents]
+            scores = colbert_model.compute_score(pairs, normalize=True)
+            ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
+            return [doc for doc, _ in ranked[:top_k]]
         except Exception as e:
             print(f"[BGE Reranker] Error: {e}")
             return documents[:top_k]
         
     def finetune_bge_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
-        if self._bge_model is None:
-            from .bge_finetune import BGEv2m3Reranker
-            self._bge_model = BGEv2m3Reranker(
-                model_path=os.getenv("BGEV3_RE_RANKER_PATH", "src/bge_v2_m3_rerank/bgev2m3_finetune"),
-                device=DEVICE
-            )
-        
         try:
             pairs = [[query, doc] for doc in documents]
-            scores = self._bge_model.compute_score(pairs, normalize=True)
-            if scores is not None:
-                ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
-                return [doc for doc, _ in ranked[:top_k]]
-            else:
-                return documents[:top_k]
+            # scores = bge_model.compute_score(pairs, normalize=True)
+            # ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
+            # return [doc for doc, _ in ranked[:top_k]]
         except Exception as e:
             print(f"[BGE Reranker] Error: {e}")
             return documents[:top_k]
