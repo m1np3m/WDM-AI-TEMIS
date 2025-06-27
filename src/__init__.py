@@ -16,6 +16,7 @@ from .WDMParser import (
 )
 from .vectorstore import VectorStore
 from .prompts import SYSTEM_MESSAGE, GENERATE_PROMPT
+from .rag import RAG
 
 __all__ = [
     "WDMPDFParser",
@@ -32,5 +33,6 @@ __all__ = [
     "Enrich_VertexAI",
     "VectorStore",
     "SYSTEM_MESSAGE",
-    "GENERATE_PROMPT"
+    "GENERATE_PROMPT",
+    "RAG"
 ]

@@ -16,3 +16,4 @@ from datasets import load_dataset
 from langchain.prompts import PromptTemplate
 import random
 import base64
+from pydantic import BaseModel

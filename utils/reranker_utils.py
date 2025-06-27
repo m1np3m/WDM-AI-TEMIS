@@ -174,15 +174,15 @@ class Reranker:
             print(f"[BGE Reranker] Error: {e}")
             return documents[:top_k]
         
-    # def finetune_bge_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
-    #     try:
-    #         pairs = [[query, doc] for doc in documents]
-    #         scores = bge_model.compute_score(pairs, normalize=True)
-    #         ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
-    #         return [doc for doc, _ in ranked[:top_k]]
-    #     except Exception as e:
-    #         print(f"[BGE Reranker] Error: {e}")
-    #         return documents[:top_k]
+    def finetune_bge_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
+        try:
+            pairs = [[query, doc] for doc in documents]
+            # scores = bge_model.compute_score(pairs, normalize=True)
+            # ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
+            # return [doc for doc, _ in ranked[:top_k]]
+        except Exception as e:
+            print(f"[BGE Reranker] Error: {e}")
+            return documents[:top_k]
 
 if __name__ == 'main':
     # from reranker import Reranker
