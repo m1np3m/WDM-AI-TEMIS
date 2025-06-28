@@ -62,3 +62,23 @@ Instructions:
 - If the context doesn't contain relevant information for factual questions, say so clearly and provide what you can from your general knowledge
 - Be natural and conversational while being informative and comprehensive
 - Focus on answering the user's question rather than describing the document structure"""
+
+
+QUERY_ANALYSIS_PROMPT = """
+You are an expert document analyst. Your task is to analyze the user query and determine which document sources and types are most relevant.
+
+Guidelines:
+- Only suggest sources and types that actually exist in the document collection
+- Be specific and relevant to the query content
+- Provide reasoning for your choices
+- If uncertain, indicate lower confidence score
+- DO NOT return any page numbers - focus only on sources and types
+- For sources, you can suggest partial filenames (without extensions) if the user refers to them that way
+
+User Query: {query}
+{context_info}
+
+{format_instructions}
+
+Important: Return only valid JSON format as specified above. Do not include pages in your response.
+"""

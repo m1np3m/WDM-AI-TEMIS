@@ -14,7 +14,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from .file_loader import PDFLoader
-from .prompts import GENERATE_PROMPT
+from .prompts import GENERATE_PROMPT, QUERY_ANALYSIS_PROMPT
 from .vectorstore import QdrantClientManager, VectorStore
 
 
@@ -296,24 +296,7 @@ class RAG:
             if available_types:
                 context_info += f"\nAvailable types: {', '.join(available_types)}"
 
-            template = """
-            You are an expert document analyst. Your task is to analyze the user query and determine which document sources and types are most relevant.
-            
-            Guidelines:
-            - Only suggest sources and types that actually exist in the document collection
-            - Be specific and relevant to the query content
-            - Provide reasoning for your choices
-            - If uncertain, indicate lower confidence score
-            - DO NOT return any page numbers - focus only on sources and types
-            - For sources, you can suggest partial filenames (without extensions) if the user refers to them that way
-            
-            User Query: {query}
-            {context_info}
-            
-            {format_instructions}
-            
-            Important: Return only valid JSON format as specified above. Do not include pages in your response.
-            """
+            template = QUERY_ANALYSIS_PROMPT
 
             prompt_template = PromptTemplate(
                 template=template,
