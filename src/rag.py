@@ -9,6 +9,7 @@ from langchain.output_parsers import PydanticOutputParser
 from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate
 from langchain_google_vertexai import ChatVertexAI
+from langfuse import Langfuse
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -40,6 +41,7 @@ class RAG:
         use_memory: bool,
         collection_name: str,
         persist_dir: str,
+        langfuse_client: Optional[Langfuse] = None,
     ):
         self.embedding_type = embedding_type
         self.embedding_model = embedding_model
@@ -58,6 +60,7 @@ class RAG:
             chunk_type=chunk_type,
             use_memory=use_memory,
         )
+        self.langfuse = langfuse_client
 
     def _format_time(self, seconds):
         """Format seconds to human readable time"""
@@ -119,15 +122,15 @@ class RAG:
     async def load_pdfs(
         self,
         pdf_files: List[str],
-        credential_path: str = None,
-        temp_dir: str = None,
+        credential_path: Optional[str] = None,
+        temp_dir: Optional[str] = None,
         debug_mode: bool = False,
     ):
         """Process multiple PDF files asynchronously"""
         loader = PDFLoader(
-            credential_path=credential_path,
+            credential_path=credential_path or "",
             debug=debug_mode,
-            temp_dir=temp_dir,
+            temp_dir=temp_dir or "",
             enrich=False,
         )
 
@@ -161,12 +164,12 @@ class RAG:
                 )
             else:
                 processed_results.append(result)
-                if result["success"]:
-                    all_splits.extend(result["splits"])
+                if isinstance(result, dict) and result.get("success", False):
+                    all_splits.extend(result.get("splits", []))
 
         total_time = time.time() - start_time
-        successful_files = len([r for r in processed_results if r["success"]])
-        total_docs = sum(r["count"] for r in processed_results if r["success"])
+        successful_files = len([r for r in processed_results if r.get("success", False)])
+        total_docs = sum(r.get("count", 0) for r in processed_results if r.get("success", False))
         text_docs = len(
             [doc for doc in all_splits if doc.metadata.get("type") == "text"]
         )
@@ -195,7 +198,23 @@ class RAG:
         self,
         documents: List[Document],
     ):
-        self.vectorstore.add_documents(documents)
+        if self.langfuse:
+            with self.langfuse.start_as_current_span(
+                name="document-ingestion",
+                metadata={
+                    "collection_name": self.collection_name,
+                    "document_count": len(documents),
+                },
+                input={"document_sources": list(set(d.metadata.get("source", "Unknown") for d in documents))}
+            ) as trace:
+                with trace.start_as_current_span(
+                    name="add-to-vectorstore",
+                    input={"document_count": len(documents)}
+                ) as span:
+                    self.vectorstore.add_documents(documents)
+                    span.update(output={"status": "success"})
+        else:
+            self.vectorstore.add_documents(documents)
 
     def retrieve_documents(
         self,
@@ -221,6 +240,7 @@ class RAG:
         query: str,
         available_sources: Optional[List[str]] = None,
         available_types: Optional[List[str]] = ["text", "table"],
+        callbacks: Optional[list] = None
     ):
         """
         Analyze query and return relevant sources and types
@@ -242,27 +262,22 @@ class RAG:
             """Schema for query analysis results"""
 
             sources: List[str] = Field(
-                description="List of sources relevant to the query",
-                example=["document1.pdf", "report2024.docx"],
+                default=[],
+                description="List of sources relevant to the query"
             )
             types: List[str] = Field(
-                description="List of types relevant to the query",
-                example=["report", "manual", "specification"],
+                default=[],
+                description="List of types relevant to the query"
             )
-            # pages: Optional[List[int]] = Field(
-            #     description="List of pages relevant to the query (if any)",
-            #     default=None,
-            #     example=[1, 5, 10]
-            # )
             confidence_score: Optional[float] = Field(
-                description="Confidence level of the analysis (0-1)",
                 default=None,
+                description="Confidence level of the analysis (0-1)",
                 ge=0.0,
                 le=1.0,
             )
             reasoning: Optional[str] = Field(
-                description="Reasoning for why these sources/types were selected",
                 default=None,
+                description="Reasoning for why these sources/types were selected"
             )
 
         parser = PydanticOutputParser(pydantic_object=QueryAnalysis)
@@ -311,8 +326,8 @@ class RAG:
             # Create chain
             chain = prompt_template | llm | parser
 
-            # Invoke with error handling
-            response = chain.invoke({"query": query, "context_info": context_info})
+            # Invoke with error handling AND callbacks
+            response = chain.invoke({"query": query, "context_info": ""}, config={"callbacks": callbacks})
 
             # Validate and filter results with improved source matching
             if available_sources:
@@ -387,7 +402,7 @@ class RAG:
 
         return "".join(context_parts)
 
-    def generate_response(self, prompt: str, context: str) -> str:
+    def generate_response(self, prompt: str, context: str, callbacks: Optional[list] = None) -> str:
         prompt_template = PromptTemplate(
             template=GENERATE_PROMPT,
             input_variables=["context", "question"],
@@ -400,38 +415,99 @@ class RAG:
 
         chain = prompt_template | llm
         response = chain.invoke(
-            {
-                "context": context,
-                "question": prompt,
-            }
+            {"context": context, "question": prompt},
+            config={"callbacks": callbacks}
         )
-        return response
+        # Extract content from AIMessage if needed
+        if hasattr(response, "content"):
+            content = response.content
+            # Handle case where content might be a list
+            if isinstance(content, list):
+                return str(content)
+            return str(content) if content is not None else ""
+        return str(response)
 
     def __call__(self, query: str, filter: bool = True) -> dict:
-        analysis = self.query_analysis(
-            query,
-            available_sources=self.get_unique_sources(),
-            available_types=["text", "table"],
-        )
+        
+        if not self.langfuse:
+            # Fallback to original behavior if Langfuse is not configured
+            analysis = self.query_analysis(query, available_sources=self.get_unique_sources())
+            filter_sources = analysis.sources if filter and analysis.sources else None
+            filter_types = analysis.types if filter and analysis.types else None
+            docs = self.retrieve_documents(query, filter_sources, filter_types)
+            context = self.prepare_context(docs)
+            response = self.generate_response(query, context)
+            return {"response": response, "context": context, "docs": docs, "query": query, "analysis": analysis}
 
-        # Apply filtering based on analysis if filter is enabled
-        if filter and analysis:
-            filter_sources = analysis.sources if analysis.sources else None
-            filter_types = analysis.types if analysis.types else None
-        else:
-            filter_sources = None
-            filter_types = None
+        
+        with self.langfuse.start_as_current_span(
+            name="rag-query",
+            input={"query": query},
+            metadata={
+                "embedding_type": self.embedding_type,
+                "embedding_model": self.embedding_model,
+                "hybrid_search": self.enable_hybrid_search,
+                "chunk_type": self.chunk_type,
+            }
+        ) as trace:
+            # 1. Query Analysis Step
+            with trace.start_as_current_span(name="query-analysis") as analysis_span:
+                # Import CallbackHandler inside the method to get the handler
+                from langfuse.langchain import CallbackHandler
+                langfuse_handler = CallbackHandler()
+                
+                analysis = self.query_analysis(
+                    query,
+                    available_sources=self.get_unique_sources(),
+                    available_types=["text", "table"],
+                    callbacks=[langfuse_handler]
+                )
+                analysis_span.update(
+                    output=analysis.dict()
+                )
+                
+            filter_sources = analysis.sources if filter and analysis.sources else None
+            filter_types = analysis.types if filter and analysis.types else None
+            
+            # 2. Retrieval Step
+            with trace.start_as_current_span(name="retrieval") as retrieval_span:
+                docs = self.retrieve_documents(
+                    query=query, filter_sources=filter_sources, filter_types=filter_types
+                )
+                retrieval_span.update(
+                    input={"query": query, "filter_sources": filter_sources, "filter_types": filter_types},
+                    output={
+                        "retrieved_documents_count": len(docs),
+                        "retrieved_sources": list(set(d.metadata.get("source", "Unknown") for d in docs))
+                    }
+                )
 
-        docs = self.retrieve_documents(
-            query=query, filter_sources=filter_sources, filter_types=filter_types
-        )
-        context = self.prepare_context(docs)
-        response = self.generate_response(query, context)
+            context = self.prepare_context(docs)
+            
+            # 3. Generation Step
+            with trace.start_as_current_span(name="generation") as generation_span:
+                # Import CallbackHandler again for this step
+                from langfuse.langchain import CallbackHandler
+                langfuse_handler = CallbackHandler()
+                
+                response = self.generate_response(
+                    query,
+                    context,
+                    callbacks=[langfuse_handler]
+                )
 
-        return {
-            "response": response,
-            "context": context,
-            "docs": docs,
-            "query": query,
-            "analysis": analysis,
-        }
+                generation_span.update(
+                    input={"query": query, "context_length": len(context)},
+                    output={"response": response}
+                )
+
+            # Finalize the main trace
+            trace.update(output={"final_response": response})
+
+            return {
+                "response": response,
+                "context": context,
+                "docs": docs,
+                "query": query,
+                "analysis": analysis,
+            }

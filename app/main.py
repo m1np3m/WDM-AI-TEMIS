@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate
+from langfuse import Langfuse
 from loguru import logger
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -24,7 +25,29 @@ st.set_page_config(
 load_dotenv()
 
 # ============================== CACHED FUNCTIONS ==============================
+@st.cache_resource
+def initialize_langfuse():
+    """Cache Langfuse client."""
+    try:
+        public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
+        secret_key = os.getenv("LANGFUSE_SECRET_KEY")
+        host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
 
+        if not public_key or not secret_key:
+            logger.warning("Langfuse keys not found in .env file. Tracing will be disabled.")
+            return None
+            
+        client = Langfuse(
+            public_key=public_key,
+            secret_key=secret_key,
+            host=host
+        )
+        logger.info("Langfuse client initialized successfully.")
+        return client
+    except Exception as e:
+        logger.error(f"Langfuse initialization error: {e}")
+        st.error(f"❌ Error initializing Langfuse: {e}")
+        return None
 
 @st.cache_resource
 def initialize_rag(
@@ -34,6 +57,7 @@ def initialize_rag(
     chunk_type,
     collection_name,
     persist_dir,
+    _langfuse_client,
 ):
     """Cache RAG instance để tránh khởi tạo lại mỗi lần refresh"""
     try:
@@ -45,6 +69,7 @@ def initialize_rag(
             use_memory=False,
             collection_name=collection_name,
             persist_dir=persist_dir,
+            langfuse_client=_langfuse_client,
         )
         logger.info(f"RAG initialized with cache")
         return rag
@@ -52,7 +77,6 @@ def initialize_rag(
         logger.error(f"RAG initialization error: {e}")
         st.error(f"❌ Error initializing RAG: {e}")
         st.stop()
-
 
 # ============================== USEFUL FUNCTIONS ==============================
 
@@ -86,6 +110,8 @@ def main():
     # Initialize chat history
     if "messages" not in st.session_state:
         st.session_state.messages = []
+
+    langfuse_client = initialize_langfuse()
 
     # Side bar
     with st.sidebar:
@@ -167,6 +193,7 @@ def main():
                     chunk_type=chunk_type,
                     collection_name=collection_name,
                     persist_dir=persist_dir,
+                    _langfuse_client=langfuse_client,
                 )
 
             # Lưu vào session state
