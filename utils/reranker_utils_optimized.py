@@ -50,6 +50,8 @@ try:
     )
     # FIX: Explicitly cast the model to float32 to prevent dtype errors.
     colbert_model.model.to(torch.float32)
+    # FIX 2: Force the use_fp16 flag to False to prevent the model.half() call.
+    colbert_model.use_fp16 = False
 except Exception as e:
     print(f"[BGE Model Init] Warning: Failed to initialize with torch_dtype, trying fallback: {e}")
     # Fallback initialization without torch_dtype
@@ -61,6 +63,8 @@ except Exception as e:
     )
     # FIX: Also apply the fix in the fallback initialization.
     colbert_model.model.to(torch.float32)
+    # FIX 2: Also apply the fix in the fallback initialization.
+    colbert_model.use_fp16 = False
 
 
 # === Flashrank ===
