@@ -11,7 +11,7 @@ from loguru import logger
 from markdown import markdown
 
 from .extract_tables import WDMMergedTable, WDMTable, full_pipeline, get_tables_from_pdf
-from ..setting import IGNORE_TABLES
+from ..setting import IGNORE_TABLES, ENRICH_TABLES
 
 def convert_markdown_to_df(markdown_text: str) -> pd.DataFrame:
     try:
@@ -87,7 +87,7 @@ class WDMPDFParser:
         self,
         pages: List[int] = None,
         merge_span_tables: bool = True,
-        enrich: bool = True,
+        enrich: bool = ENRICH_TABLES,
     ) -> List[Document]:
         all_tables: List[WDMMergedTable] = []
         if merge_span_tables or enrich:
@@ -273,7 +273,7 @@ class WDMPDFParser:
         return documents
     
     
-    # Phát triển sau trong tương lai 
+    # TODO: Phát triển tính năng trích xuất hình ảnh
     # def extract_images(
     #     self, pages: List[int] = None, stored_path: str = None
     # ) -> List[WDMImage]:
