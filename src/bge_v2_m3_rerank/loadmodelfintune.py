@@ -21,13 +21,13 @@ class BGEv2m3Reranker:
                 key=lambda x: x[1],
                 reverse=True
             )
-            return [doc for score, doc in ranked[:top_k]]
+            return [doc for scores, doc in ranked[:top_k]]
         except Exception as e:
             print(f"[BGE Reranker] Error: {e}")
             return documents[:top_k]
 
 if __name__ == '__main__':
-    reranker_path = os.getenv("BGEV3_RE_RANKER_PATH", "src\\bge_v2_m3_rerank\\bgev2m3_finetune")
+    reranker_path = os.getenv("BGEV3_RE_RANKER_PATH", r"\WDM-AI-TEMIS\src\\bge_v2_m3_rerank\\bgev2m3finetune")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     reranker = BGEv2m3Reranker(reranker_path, device=device)
     docs = ["Introduction to hybrid retrieval.", "Overview of dense vs sparse.",

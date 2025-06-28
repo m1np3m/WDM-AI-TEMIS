@@ -1,0 +1,1 @@
+src/bge_v2_m3_rerank/bgev2m3finetune/model.safetensors filter=lfs diff=lfs merge=lfs -text
