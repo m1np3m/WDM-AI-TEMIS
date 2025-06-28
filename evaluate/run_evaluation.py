@@ -272,6 +272,14 @@ async def main(args):
     reranker_function = (
         None if not reranker_model_name else Reranker(method=reranker_model_name)
     )
+    
+    # FIX: Adjust concurrency based on the reranker to prevent CUDA OOM errors.
+    # Heavy rerankers like 'pretrained_bge' should run sequentially.
+    max_requests = 5
+    if reranker_model_name == "pretrained_bge":
+        print("Using 'pretrained_bge' reranker, reducing concurrent requests to 1 to prevent OOM error.")
+        max_requests = 1
+
     start_time = time.time()
     ex: pd.DataFrame = run_ragas_eval(
         eval_df,
@@ -282,7 +290,7 @@ async def main(args):
         reranker_function=reranker_function,
         path=os.path.join(path_to_save, get_experiment_name(args)) + ".csv",
         use_optimized_metrics=True,
-        max_concurrent_requests=5,  # Reduced from 20 to prevent RAM overflow
+        max_concurrent_requests=max_requests,  # Use the adjusted value
     )
     end_time = time.time()
     eval_time = end_time - start_time
@@ -323,7 +331,7 @@ if __name__ == "__main__":
             embedding_model_name="BAAI/bge-base-en",
             chunk_type="character",
             hybrid_search=True,
-            reranker_model_name="pretrained_bge",
+            reranker_model_name="bce",
             path_to_save=f"{exps_dir}/",
             force_create=False,
         ),
@@ -336,7 +344,7 @@ if __name__ == "__main__":
             embedding_model_name="BAAI/bge-base-en",
             chunk_type="character",
             hybrid_search=True,
-            reranker_model_name="bce",
+            reranker_model_name="pretrained_bge",
             path_to_save=f"{exps_dir}/",
             force_create=False,
         ),
