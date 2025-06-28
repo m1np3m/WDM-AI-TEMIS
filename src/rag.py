@@ -15,6 +15,8 @@ from pydantic import BaseModel, Field
 
 from .file_loader import PDFLoader
 from .prompts import GENERATE_PROMPT, QUERY_ANALYSIS_PROMPT
+from .reranker import Reranker
+from .setting import REANKER_MODEL_NAME, K
 from .vectorstore import QdrantClientManager, VectorStore
 
 
@@ -41,6 +43,7 @@ class RAG:
         use_memory: bool,
         collection_name: str,
         persist_dir: str,
+        use_reranker: bool,
         langfuse_client: Optional[Langfuse] = None,
     ):
         self.embedding_type = embedding_type
@@ -60,6 +63,12 @@ class RAG:
             chunk_type=chunk_type,
             use_memory=use_memory,
         )
+        self.use_reranker = use_reranker
+        if use_reranker:
+            self.reranker = Reranker(method=REANKER_MODEL_NAME)
+            self.reranker_name = REANKER_MODEL_NAME
+        else:
+            self.reranker = None
         self.langfuse = langfuse_client
 
     def _format_time(self, seconds):
@@ -220,11 +229,38 @@ class RAG:
         self,
         query: str,
         filter_sources: Optional[List[str]] = None,
-        filter_types: Optional[List[str]] = None,
+        filter_types: Optional[List[str]] = None,        
     ):
-        return self.vectorstore.retrieve_documents(
-            query=query, filter_sources=filter_sources, filter_types=filter_types
-        )
+        
+        if not self.use_reranker:
+            return self.vectorstore.retrieve_documents(
+                query=query, filter_sources=filter_sources, filter_types=filter_types
+            )
+        else:
+            num_docs = K * 3
+            docs = self.vectorstore.retrieve_documents(
+                query=query, filter_sources=filter_sources, filter_types=filter_types, num_docs=num_docs
+            )
+            
+            # Safer approach: Use index-based mapping instead of content mapping
+            contents = [doc.page_content for doc in docs]
+            reranked_contents = self.reranker.rerank(query, contents, K)
+            
+            # Map back using indices to handle duplicates properly
+            reranked_docs = []
+            for reranked_content in reranked_contents:
+                # Find first occurrence of this content
+                for i, original_content in enumerate(contents):
+                    if original_content == reranked_content and i < len(docs):
+                        reranked_docs.append(docs[i])
+                        contents[i] = None  # Mark as used to avoid duplicates
+                        break
+            
+            # Add this for debugging
+            if len(reranked_docs) != len(reranked_contents):
+                logger.warning(f"Some documents lost in reranking: expected {len(reranked_contents)}, got {len(reranked_docs)}")
+            
+            return reranked_docs
 
     def clear_vectorstore(self):
         self.vectorstore.clear_vectorstore()

@@ -57,6 +57,7 @@ def initialize_rag(
     chunk_type,
     collection_name,
     persist_dir,
+    use_reranker,
     _langfuse_client,
 ):
     """Cache RAG instance để tránh khởi tạo lại mỗi lần refresh"""
@@ -69,6 +70,7 @@ def initialize_rag(
             use_memory=False,
             collection_name=collection_name,
             persist_dir=persist_dir,
+            use_reranker=use_reranker,
             langfuse_client=_langfuse_client,
         )
         logger.info(f"RAG initialized with cache")
@@ -158,6 +160,12 @@ def main():
             value=True,
             help="Combine dense and sparse vectors for better retrieval",
         )
+        
+        use_reranker = st.checkbox(
+            "Use Reranker",
+            value=True,
+            help="Use reranker to get the top K documents",
+        )
 
         chunk_type = st.selectbox(
             "Text Chunking Strategy",
@@ -176,7 +184,7 @@ def main():
         persist_dir = "./qdrant_db"
 
         # Tạo key để kiểm tra xem có cần khởi tạo lại không
-        rag_config_key = f"{embedding_type}_{embedding_model}_{enable_hybrid_search}_{chunk_type}_{collection_name}"
+        rag_config_key = f"{embedding_type}_{embedding_model}_{enable_hybrid_search}_{chunk_type}_{collection_name}_{use_reranker}"
 
         # Chỉ khởi tạo RAG khi chưa có hoặc config thay đổi
         if (
@@ -193,6 +201,7 @@ def main():
                     chunk_type=chunk_type,
                     collection_name=collection_name,
                     persist_dir=persist_dir,
+                    use_reranker=use_reranker,
                     _langfuse_client=langfuse_client,
                 )
 
@@ -212,7 +221,7 @@ def main():
                 f"**Hybrid Search:** {'Enabled' if enable_hybrid_search else 'Disabled'}"
             )
             st.write(f"**Chunk Type:** {chunk_type}")
-
+            st.write(f"**Use Reranker:** {st.session_state.rag.reranker_name if st.session_state.rag.use_reranker else 'Disabled'}")
             if st.session_state.rag:
                 sources = st.session_state.rag.get_unique_sources()
                 if sources and sources != ["No sources available"]:
