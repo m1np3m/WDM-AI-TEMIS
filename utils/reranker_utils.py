@@ -5,7 +5,7 @@ import time
 from typing import Callable, List, Optional
 import requests
 import torch
-from .bge_finetune import BGEv2m3Reranker
+# from .bge_finetune import BGEv2m3Reranker
 
 def get_device():
     if torch.cuda.is_available():
@@ -80,7 +80,7 @@ class Reranker:
             "cohere": self.cohere_reranker,
             "bce": self.bce_reranker,
             "pretrained_bge": self.pretrained_bge_reranker,
-            "finetune_bge": self.finetune_bge_reranker,
+            # "finetune_bge": self.finetune_bge_reranker,
             "flashrank": self.flashrank_reranker,
             "st-crossencoder": self.st_crossencoder_reranker,
         }
