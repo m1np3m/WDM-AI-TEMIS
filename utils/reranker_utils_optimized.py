@@ -39,12 +39,24 @@ bce_model = RerankerModel("maidalun1020/bce-reranker-base_v1", use_fp16=True, de
 # === FlagEmbedding ColBERT ===
 from FlagEmbedding import FlagAutoReranker
 
-colbert_model = FlagAutoReranker.from_finetuned(
-    model_name_or_path="BAAI/bge-reranker-v2-minicpm-layerwise",
-    max_length=512,
-    device=DEVICE,
-    use_fp16=False
-)
+# Initialize BGE reranker with proper dtype handling
+try:
+    colbert_model = FlagAutoReranker.from_finetuned(
+        model_name_or_path="BAAI/bge-reranker-v2-minicpm-layerwise",
+        max_length=512,
+        device=DEVICE,
+        use_fp16=False,
+        torch_dtype=torch.float32  # Explicitly set to float32
+    )
+except Exception as e:
+    print(f"[BGE Model Init] Warning: Failed to initialize with torch_dtype, trying fallback: {e}")
+    # Fallback initialization without torch_dtype
+    colbert_model = FlagAutoReranker.from_finetuned(
+        model_name_or_path="BAAI/bge-reranker-v2-minicpm-layerwise",
+        max_length=512,
+        device=DEVICE,
+        use_fp16=False
+    )
 
 # === Flashrank ===
 from flashrank import Ranker, RerankRequest
@@ -109,10 +121,11 @@ class Reranker:
 
     def mixedbread_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
         try:
+            from typing import cast, Any
             response = mxbai.rerank(
                 model="mixedbread-ai/mxbai-rerank-large-v1",
                 query=query,
-                input=documents,
+                input=cast(Any, documents),  # Cast to satisfy type checker
                 top_k=top_k,
                 return_input=True
             )
@@ -170,20 +183,41 @@ class Reranker:
             pairs = [(query, doc) for doc in documents]
             scores = colbert_model.compute_score(pairs, normalize=True)
             if scores is not None:
-                # Convert scores to float32 if they're in half precision
+                # Ensure scores are in float32 format
                 import torch
                 import numpy as np
-                if hasattr(scores, 'dtype'):
-                    if torch.is_tensor(scores) and scores.dtype == torch.float16:
-                        scores = scores.float()
-                    elif isinstance(scores, np.ndarray) and scores.dtype == np.float16:
-                        scores = scores.astype(np.float32)
+                
+                # Convert to float32 to avoid type mismatch errors
+                if torch.is_tensor(scores):
+                    # Force conversion to float32 regardless of original dtype
+                    scores = scores.to(dtype=torch.float32)
+                    # Convert to numpy for easier handling
+                    if scores.is_cuda:
+                        scores = scores.cpu().numpy()
+                    else:
+                        scores = scores.numpy()
+                elif isinstance(scores, np.ndarray):
+                    scores = scores.astype(np.float32)
+                else:
+                    # Handle list or other types
+                    scores = np.array(scores, dtype=np.float32)
+                
+                # Ensure documents and scores have same length
+                if len(documents) != len(scores):
+                    print(f"[BGE Reranker] Warning: Length mismatch - documents: {len(documents)}, scores: {len(scores)}")
+                    min_len = min(len(documents), len(scores))
+                    documents = documents[:min_len]
+                    scores = scores[:min_len]
+                
                 ranked = sorted(zip(documents, scores), key=lambda x: float(x[1]), reverse=True)
                 return [doc for doc, _ in ranked[:top_k]]
             else:
+                print(f"[BGE Reranker] Warning: compute_score returned None")
                 return documents[:top_k]
         except Exception as e:
             print(f"[BGE Reranker] Error: {e}")
+            import traceback
+            print(f"[BGE Reranker] Traceback: {traceback.format_exc()}")
             return documents[:top_k]
         
     def finetune_bge_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
