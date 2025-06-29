@@ -24,12 +24,12 @@ JINA_URL = "https://api.jina.ai/v1/rerank"
 # === Mixedbread ===
 from mixedbread import Mixedbread
 
-mxbai = Mixedbread(api_key=os.getenv("MXBAI_API_KEY"))
+mxbai = Mixedbread(api_key=os.getenv("MXBAI_API_KEY", ""))
 
 # === Cohere ===
 import cohere
 
-co = cohere.Client(os.getenv("COHERE_KEY"))
+co = cohere.Client(os.getenv("COHERE_KEY", ""))
 
 # === BCE ===
 from BCEmbedding import RerankerModel
@@ -39,11 +39,33 @@ bce_model = RerankerModel("maidalun1020/bce-reranker-base_v1", use_fp16=True, de
 # === FlagEmbedding ColBERT ===
 from FlagEmbedding import FlagAutoReranker
 
-colbert_model = FlagAutoReranker.from_finetuned(
-    model_name_or_path="BAAI/bge-reranker-v2-minicpm-layerwise",
-    max_length=512,
-    devices=DEVICE
-)
+# Initialize BGE reranker with proper dtype handling
+try:
+    colbert_model = FlagAutoReranker.from_finetuned(
+        model_name_or_path="BAAI/bge-reranker-v2-minicpm-layerwise",
+        max_length=512,
+        device=DEVICE,
+        use_fp16=False,
+        torch_dtype=torch.float32  # Explicitly set to float32
+    )
+    # FIX: Explicitly cast the model to float32 to prevent dtype errors.
+    colbert_model.model.to(torch.float32)
+    # FIX 2: Force the use_fp16 flag to False to prevent the model.half() call.
+    colbert_model.use_fp16 = False
+except Exception as e:
+    print(f"[BGE Model Init] Warning: Failed to initialize with torch_dtype, trying fallback: {e}")
+    # Fallback initialization without torch_dtype
+    colbert_model = FlagAutoReranker.from_finetuned(
+        model_name_or_path="BAAI/bge-reranker-v2-minicpm-layerwise",
+        max_length=512,
+        device=DEVICE,
+        use_fp16=False
+    )
+    # FIX: Also apply the fix in the fallback initialization.
+    colbert_model.model.to(torch.float32)
+    # FIX 2: Also apply the fix in the fallback initialization.
+    colbert_model.use_fp16 = False
+
 
 # === Flashrank ===
 from flashrank import Ranker, RerankRequest
@@ -90,7 +112,7 @@ class Reranker:
     def jina_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {os.getenv('JINA_API_KEY')}",
+            "Authorization": f"Bearer {os.getenv('JINA_API_KEY', '')}",
         }
         data = {
             "model": JINA_MODEL,
@@ -108,14 +130,15 @@ class Reranker:
 
     def mixedbread_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
         try:
+            from typing import cast, Any
             response = mxbai.rerank(
                 model="mixedbread-ai/mxbai-rerank-large-v1",
                 query=query,
-                input=documents,
+                input=cast(Any, documents),  # Cast to satisfy type checker
                 top_k=top_k,
                 return_input=True
             )
-            return [doc.input for doc in response.data]
+            return [str(doc.input) if doc.input is not None else "" for doc in response.data]
         except Exception as e:
             print(f"[Mixedbread Reranker] Error: {e}")
             return documents[:top_k]
@@ -166,12 +189,44 @@ class Reranker:
         
     def pretrained_bge_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
         try:
-            pairs = [[query, doc] for doc in documents]
+            pairs = [(query, doc) for doc in documents]
             scores = colbert_model.compute_score(pairs, normalize=True)
-            ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
-            return [doc for doc, _ in ranked[:top_k]]
+            if scores is not None:
+                # Ensure scores are in float32 format
+                import torch
+                import numpy as np
+                
+                # Convert to float32 to avoid type mismatch errors
+                if torch.is_tensor(scores):
+                    # Force conversion to float32 regardless of original dtype
+                    scores = scores.to(dtype=torch.float32)
+                    # Convert to numpy for easier handling
+                    if scores.is_cuda:
+                        scores = scores.cpu().numpy()
+                    else:
+                        scores = scores.numpy()
+                elif isinstance(scores, np.ndarray):
+                    scores = scores.astype(np.float32)
+                else:
+                    # Handle list or other types
+                    scores = np.array(scores, dtype=np.float32)
+                
+                # Ensure documents and scores have same length
+                if len(documents) != len(scores):
+                    print(f"[BGE Reranker] Warning: Length mismatch - documents: {len(documents)}, scores: {len(scores)}")
+                    min_len = min(len(documents), len(scores))
+                    documents = documents[:min_len]
+                    scores = scores[:min_len]
+                
+                ranked = sorted(zip(documents, scores), key=lambda x: float(x[1]), reverse=True)
+                return [doc for doc, _ in ranked[:top_k]]
+            else:
+                print(f"[BGE Reranker] Warning: compute_score returned None")
+                return documents[:top_k]
         except Exception as e:
             print(f"[BGE Reranker] Error: {e}")
+            import traceback
+            print(f"[BGE Reranker] Traceback: {traceback.format_exc()}")
             return documents[:top_k]
         
     def finetune_bge_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
@@ -180,6 +235,7 @@ class Reranker:
             scores = bge_model.compute_score(pairs, normalize=True)
             ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
             return [doc for doc, _ in ranked[:top_k]]
+            return documents[:top_k]  # Return fallback when commented out
         except Exception as e:
             print(f"[BGE Reranker] Error: {e}")
             return documents[:top_k]
