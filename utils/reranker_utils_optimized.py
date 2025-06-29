@@ -5,7 +5,40 @@ import time
 from typing import Callable, List, Optional
 import requests
 import torch
-from .bge_finetune import BGEv2m3Reranker
+# BGE Finetuned Reranker class (copied from src/bge_v2_m3_rerank/loadmodelfintune.py)
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+class BGEv2m3FinetunedReranker:
+    def __init__(self, model_path: str, device: str = 'cpu'):
+        self.device = torch.device(device)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
+        self.model = AutoModelForSequenceClassification.from_pretrained(model_path)
+        self.model.to(self.device)
+        self.model.eval()
+
+    def bgev2m3_rerank(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
+        try:
+            pairs = [[query, doc] for doc in documents]
+            scores = []
+
+            with torch.no_grad():
+                for q, d in pairs:
+                    inputs = self.tokenizer(
+                        q, d,
+                        return_tensors='pt',
+                        truncation=True,
+                        padding=True,
+                        max_length=512
+                    ).to(self.device)
+                    outputs = self.model(**inputs)
+                    score = outputs.logits.squeeze().item()
+                    scores.append(score)
+
+            ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
+            return [doc for doc, score in ranked[:top_k]]
+        except Exception as e:
+            print(f"[BGE Finetuned Reranker] Error: {e}")
+            return documents[:top_k]
 
 def get_device():
     if torch.cuda.is_available():
@@ -77,10 +110,28 @@ from sentence_transformers import CrossEncoder
 
 st_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 # === BGE reranker ===
-bge_model = BGEv2m3Reranker(
-    model_path=os.getenv("BGEV3_RE_RANKER_PATH", "rakhuynh/bgev2m3_finetune_wdm"),
-    device=DEVICE
-)
+# Initialize finetuned BGE reranker
+bge_finetune_model = None
+try:
+    bge_finetune_model_path = os.getenv("BGEV3_RE_RANKER_PATH", "src/bge_v2_m3_rerank/bgev2m3_finetune")
+    if os.path.exists(bge_finetune_model_path):
+        bge_finetune_model = BGEv2m3FinetunedReranker(
+            model_path=bge_finetune_model_path,
+            device=DEVICE
+        )
+        print(f"[BGE Finetune] Loaded finetuned model from: {bge_finetune_model_path}")
+    else:
+        # Try alternative path from Hugging Face
+        alt_path = "rakhuynh/bgev2m3_finetune_wdm"
+        print(f"[BGE Finetune] Local path not found, trying: {alt_path}")
+        bge_finetune_model = BGEv2m3FinetunedReranker(
+            model_path=alt_path,
+            device=DEVICE
+        )
+        print(f"[BGE Finetune] Loaded finetuned model from HF: {alt_path}")
+except Exception as e:
+    print(f"[BGE Finetune] Warning: Failed to initialize finetuned BGE model: {e}")
+    bge_finetune_model = None
 
 
 class Reranker:
@@ -231,13 +282,17 @@ class Reranker:
         
     def finetune_bge_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
         try:
-            pairs = [[query, doc] for doc in documents]
-            scores = bge_model.compute_score(pairs, normalize=True)
-            ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
-            return [doc for doc, _ in ranked[:top_k]]
-            return documents[:top_k]  # Return fallback when commented out
+            if bge_finetune_model is None:
+                print(f"[BGE Finetune Reranker] Warning: Finetuned model not available, using fallback")
+                return documents[:top_k]
+            
+            # Use the bgev2m3_rerank method from the finetuned model
+            reranked_docs = bge_finetune_model.bgev2m3_rerank(query, documents, top_k)
+            return reranked_docs
         except Exception as e:
-            print(f"[BGE Reranker] Error: {e}")
+            print(f"[BGE Finetune Reranker] Error: {e}")
+            import traceback
+            print(f"[BGE Finetune Reranker] Traceback: {traceback.format_exc()}")
             return documents[:top_k]
 
 if __name__ == 'main':
