@@ -276,8 +276,8 @@ async def main(args):
     # FIX: Adjust concurrency based on the reranker to prevent CUDA OOM errors.
     # Heavy rerankers like 'pretrained_bge' should run sequentially.
     max_requests = 5
-    if reranker_model_name == "pretrained_bge":
-        print("Using 'pretrained_bge' reranker, reducing concurrent requests to 1 to prevent OOM error.")
+    if "bge" in reranker_model_name:
+        print(f"Using '{reranker_model_name}' reranker, reducing concurrent requests to 1 to prevent OOM error.")
         max_requests = 1
 
     start_time = time.time()
@@ -331,49 +331,49 @@ if __name__ == "__main__":
             embedding_model_name="BAAI/bge-base-en",
             chunk_type="character",
             hybrid_search=True,
-            reranker_model_name="pretrained_bge",
+            reranker_model_name="finetune_bge",
             path_to_save=f"{exps_dir}/",
             force_create=False,
         ),
-        Args(
-            pdf_folder=pdf_folder,
-            qa_path=qa_path,
-            chunk_size=512,
-            chunk_overlap=128,
-            num_docs=7,
-            embedding_model_name="BAAI/bge-base-en",
-            chunk_type="character",
-            hybrid_search=True,
-            reranker_model_name="bce",
-            path_to_save=f"{exps_dir}/",
-            force_create=False,
-        ),
-        Args(
-            pdf_folder=pdf_folder,
-            qa_path=qa_path,
-            chunk_size=512,
-            chunk_overlap=128,
-            num_docs=7,
-            embedding_model_name="BAAI/bge-base-en",
-            chunk_type="character",
-            hybrid_search=True,
-            reranker_model_name="flashrank",
-            path_to_save=f"{exps_dir}/",
-            force_create=False,
-        ),
-        Args(
-            pdf_folder=pdf_folder,
-            qa_path=qa_path,
-            chunk_size=512,
-            chunk_overlap=128,
-            num_docs=7,
-            embedding_model_name="BAAI/bge-base-en",
-            chunk_type="character",
-            hybrid_search=True,
-            reranker_model_name="st-crossencoder",
-            path_to_save=f"{exps_dir}/",
-            force_create=False,
-        ),
+        # Args(
+        #     pdf_folder=pdf_folder,
+        #     qa_path=qa_path,
+        #     chunk_size=512,
+        #     chunk_overlap=128,
+        #     num_docs=7,
+        #     embedding_model_name="BAAI/bge-base-en",
+        #     chunk_type="character",
+        #     hybrid_search=True,
+        #     reranker_model_name="bce",
+        #     path_to_save=f"{exps_dir}/",
+        #     force_create=False,
+        # ),
+        # Args(
+        #     pdf_folder=pdf_folder,
+        #     qa_path=qa_path,
+        #     chunk_size=512,
+        #     chunk_overlap=128,
+        #     num_docs=7,
+        #     embedding_model_name="BAAI/bge-base-en",
+        #     chunk_type="character",
+        #     hybrid_search=True,
+        #     reranker_model_name="flashrank",
+        #     path_to_save=f"{exps_dir}/",
+        #     force_create=False,
+        # ),
+        # Args(
+        #     pdf_folder=pdf_folder,
+        #     qa_path=qa_path,
+        #     chunk_size=512,
+        #     chunk_overlap=128,
+        #     num_docs=7,
+        #     embedding_model_name="BAAI/bge-base-en",
+        #     chunk_type="character",
+        #     hybrid_search=True,
+        #     reranker_model_name="st-crossencoder",
+        #     path_to_save=f"{exps_dir}/",
+        #     force_create=False,
+        # ),
     ]
     
     # You can also parse args instead of using predefined configs

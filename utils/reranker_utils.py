@@ -55,10 +55,10 @@ from sentence_transformers import CrossEncoder
 
 st_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 # === BGE reranker ===
-# bge_model = BGEv2m3Reranker(
-#     model_path=os.getenv("BGEV3_RE_RANKER_PATH", "src/bge_v2_m3_rerank/bgev2m3_finetune"),
-#     device=DEVICE
-# )
+bge_model = BGEv2m3Reranker(
+    model_path=os.getenv("BGEV3_RE_RANKER_PATH", "rakhuynh/bgev2m3_finetune_wdm"),
+    device=DEVICE
+)
 
 
 class Reranker:
@@ -177,9 +177,9 @@ class Reranker:
     def finetune_bge_reranker(self, query: str, documents: List[str], top_k: int = 5) -> List[str]:
         try:
             pairs = [[query, doc] for doc in documents]
-            # scores = bge_model.compute_score(pairs, normalize=True)
-            # ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
-            # return [doc for doc, _ in ranked[:top_k]]
+            scores = bge_model.compute_score(pairs, normalize=True)
+            ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
+            return [doc for doc, _ in ranked[:top_k]]
         except Exception as e:
             print(f"[BGE Reranker] Error: {e}")
             return documents[:top_k]
