@@ -174,17 +174,14 @@ def main():
             help="Choose text splitting strategy: character (simple) or recursive (smart)",
         )
 
-        collection_name = st.text_input(
-            "Collection Name",
-            value="wdm_ai_temis",
-            help="Name for the vector database collection",
-        )
-
         # Initialize RAG với cache - chỉ khi cần thiết
         persist_dir = "./qdrant_db"
 
         # Tạo key để kiểm tra xem có cần khởi tạo lại không
-        rag_config_key = f"{embedding_type}_{embedding_model}_{enable_hybrid_search}_{chunk_type}_{collection_name}_{use_reranker}"
+        rag_config_key = f"{embedding_type}_{embedding_model}_{enable_hybrid_search}_{chunk_type}_{use_reranker}"
+        
+        # Tự động tạo collection name dựa trên config để tránh xung đột
+        collection_name = f"wdm_{rag_config_key}".replace("-", "_").replace(".", "_").lower()
 
         # Chỉ khởi tạo RAG khi chưa có hoặc config thay đổi
         if (
