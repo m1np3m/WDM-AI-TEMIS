@@ -1,3 +1,5 @@
+# reranker.py
+
 import os
 import time
 from typing import Callable, List, Optional
@@ -5,7 +7,44 @@ from typing import Callable, List, Optional
 import requests
 import torch
 
-# from .bge_finetune import BGEv2m3Reranker
+# BGE Finetuned Reranker class (copied from src/bge_v2_m3_rerank/loadmodelfintune.py)
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+
+class BGEv2m3FinetunedReranker:
+    def __init__(self, model_path: str, device: str = "cpu"):
+        self.device = torch.device(device)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
+        self.model = AutoModelForSequenceClassification.from_pretrained(model_path)
+        self.model.to(self.device)
+        self.model.eval()
+
+    def bgev2m3_rerank(
+        self, query: str, documents: List[str], top_k: int = 5
+    ) -> List[str]:
+        try:
+            pairs = [[query, doc] for doc in documents]
+            scores = []
+
+            with torch.no_grad():
+                for q, d in pairs:
+                    inputs = self.tokenizer(
+                        q,
+                        d,
+                        return_tensors="pt",
+                        truncation=True,
+                        padding=True,
+                        max_length=512,
+                    ).to(self.device)
+                    outputs = self.model(**inputs)
+                    score = outputs.logits.squeeze().item()
+                    scores.append(score)
+
+            ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
+            return [doc for doc, score in ranked[:top_k]]
+        except Exception as e:
+            print(f"[BGE Finetuned Reranker] Error: {e}")
+            return documents[:top_k]
 
 
 def get_device():
@@ -18,13 +57,6 @@ def get_device():
 
 
 DEVICE = get_device()
-
-
-# === BGE reranker ===
-# bge_model = BGEv2m3Reranker(
-#     model_path=os.getenv("BGEV3_RE_RANKER_PATH", "src/bge_v2_m3_rerank/bgev2m3_finetune"),
-#     device=DEVICE
-# )
 
 
 class Reranker:
@@ -46,7 +78,7 @@ class Reranker:
             "cohere": self.cohere_reranker,
             "bce": self.bce_reranker,
             "pretrained_bge": self.pretrained_bge_reranker,
-            # "finetune_bge": self.finetune_bge_reranker,
+            "finetune_bge": self.finetune_bge_reranker,
             "flashrank": self.flashrank_reranker,
             "st-crossencoder": self.st_crossencoder_reranker,
         }
@@ -56,7 +88,6 @@ class Reranker:
     def jina_reranker(
         self, query: str, documents: List[str], top_k: int = 5
     ) -> List[str]:
-        # === Jina ===
         JINA_MODEL = "jina-colbert-v1-en"
         JINA_URL = "https://api.jina.ai/v1/rerank"
 
@@ -82,13 +113,11 @@ class Reranker:
         self, query: str, documents: List[str], top_k: int = 5
     ) -> List[str]:
         try:
-            # === Mixedbread ===
             from typing import Any, cast
 
             from mixedbread import Mixedbread
 
             mxbai = Mixedbread(api_key=os.getenv("MXBAI_API_KEY", ""))
-
             response = mxbai.rerank(
                 model="mixedbread-ai/mxbai-rerank-large-v1",
                 query=query,
@@ -107,11 +136,9 @@ class Reranker:
         self, query: str, documents: List[str], top_k: int = 5
     ) -> List[str]:
         try:
-            # === Cohere ===
-            import cohere
+            from cohere import Client
 
-            co = cohere.Client(os.getenv("COHERE_KEY", ""))
-
+            co = Client(os.getenv("COHERE_KEY", ""))
             response = co.rerank(
                 model="rerank-english-v3.0",
                 query=query,
@@ -128,7 +155,6 @@ class Reranker:
         self, query: str, documents: List[str], top_k: int = 5
     ) -> List[str]:
         try:
-            # === BCE ===
             from BCEmbedding import RerankerModel
 
             bce_model = RerankerModel(
@@ -147,7 +173,6 @@ class Reranker:
         self, query: str, documents: List[str], top_k: int = 5
     ) -> List[str]:
         try:
-            # === Flashrank ===
             from flashrank import Ranker, RerankRequest
 
             flashrank_model = Ranker(
@@ -166,10 +191,10 @@ class Reranker:
         self, query: str, documents: List[str], top_k: int = 5
     ) -> List[str]:
         try:
-            # === Sentence Transformers ===
             from sentence_transformers import CrossEncoder
 
             st_model = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+
             pairs = [[query, doc] for doc in documents]
             scores = st_model.predict(pairs)
             ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
@@ -182,7 +207,6 @@ class Reranker:
         self, query: str, documents: List[str], top_k: int = 5
     ) -> List[str]:
         try:
-            # === FlagEmbedding ColBERT ===
             from FlagEmbedding import FlagAutoReranker
 
             # Initialize BGE reranker with proper dtype handling
@@ -213,7 +237,6 @@ class Reranker:
                 colbert_model.model.to(torch.float32)
                 # FIX 2: Also apply the fix in the fallback initialization.
                 colbert_model.use_fp16 = False
-
             pairs = [(query, doc) for doc in documents]
             scores = colbert_model.compute_score(pairs, normalize=True)
             if scores is not None:
@@ -259,18 +282,50 @@ class Reranker:
             print(f"[BGE Reranker] Traceback: {traceback.format_exc()}")
             return documents[:top_k]
 
-    # def finetune_bge_reranker(
-    #     self, query: str, documents: List[str], top_k: int = 5
-    # ) -> List[str]:
-    #     try:
-    #         pairs = [[query, doc] for doc in documents]
-    #         # scores = bge_model.compute_score(pairs, normalize=True)
-    #         # ranked = sorted(zip(documents, scores), key=lambda x: x[1], reverse=True)
-    #         # return [doc for doc, _ in ranked[:top_k]]
-    #         return documents[:top_k]  # Return fallback when commented out
-    #     except Exception as e:
-    #         print(f"[BGE Reranker] Error: {e}")
-    #         return documents[:top_k]
+    def finetune_bge_reranker(
+        self, query: str, documents: List[str], top_k: int = 5
+    ) -> List[str]:
+        try:
+            bge_finetune_model = None
+            try:
+                bge_finetune_model_path = os.getenv(
+                    "BGEV3_RE_RANKER_PATH", "src/bge_v2_m3_rerank/bgev2m3_finetune"
+                )
+                if os.path.exists(bge_finetune_model_path):
+                    bge_finetune_model = BGEv2m3FinetunedReranker(
+                        model_path=bge_finetune_model_path, device=DEVICE
+                    )
+                    print(
+                        f"[BGE Finetune] Loaded finetuned model from: {bge_finetune_model_path}"
+                    )
+                else:
+                    # Try alternative path from Hugging Face
+                    alt_path = "rakhuynh/bgev2m3_finetune_wdm"
+                    print(f"[BGE Finetune] Local path not found, trying: {alt_path}")
+                    bge_finetune_model = BGEv2m3FinetunedReranker(
+                        model_path=alt_path, device=DEVICE
+                    )
+                    print(f"[BGE Finetune] Loaded finetuned model from HF: {alt_path}")
+            except Exception as e:
+                print(
+                    f"[BGE Finetune] Warning: Failed to initialize finetuned BGE model: {e}"
+                )
+                bge_finetune_model = None
+            if bge_finetune_model is None:
+                print(
+                    f"[BGE Finetune Reranker] Warning: Finetuned model not available, using fallback"
+                )
+                return documents[:top_k]
+
+            # Use the bgev2m3_rerank method from the finetuned model
+            reranked_docs = bge_finetune_model.bgev2m3_rerank(query, documents, top_k)
+            return reranked_docs
+        except Exception as e:
+            print(f"[BGE Finetune Reranker] Error: {e}")
+            import traceback
+
+            print(f"[BGE Finetune Reranker] Traceback: {traceback.format_exc()}")
+            return documents[:top_k]
 
 
 if __name__ == "main":
