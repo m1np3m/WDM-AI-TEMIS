@@ -73,7 +73,7 @@ async def get_detail_chunks(pdf_path):
         page = doc.load_page(page_num)
         
         # Tìm và xử lý tables
-        tables = page.find_tables()
+        tables = page.find_tables(strategy="text")
         for tab in tables:
             # process the content of table 'tab'
             page.add_redact_annot(tab.bbox)  # wrap table in a redaction annotation
