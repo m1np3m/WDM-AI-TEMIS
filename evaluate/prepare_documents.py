@@ -4,7 +4,7 @@ import os
 import asyncio
 from langchain.docstore.document import Document as LangchainDocument
 from time import time
-
+from loguru import logger
 
 def extract_unique_tables_from_qa(qa_path: str):
     """
@@ -73,17 +73,19 @@ async def get_detail_chunks(pdf_path):
         page = doc.load_page(page_num)
         
         # Tìm và xử lý tables
-        tables = page.find_tables(strategy="text")
-        for tab in tables:
-            # process the content of table 'tab'
-            page.add_redact_annot(tab.bbox)  # wrap table in a redaction annotation
+        tables = page.find_tables(strategy="lines").tables
+        if tables:
+            for tab in tables:
+                # process the content of table 'tab'
+                page.add_redact_annot(tab.bbox)  # wrap table in a redaction annotation
 
-        page.apply_redactions()  # erase all table text
+            page.apply_redactions()  # erase all table text
 
         # do text searches and text extractions here
         
         text = page.get_text().strip()
         if not text:
+            logger.warning(f"Source: {source}, Page {page_num + 1} is empty")
             continue
 
         page_document = LangchainDocument(
