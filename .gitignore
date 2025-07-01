@@ -16,7 +16,7 @@ env.bak/
 venv.bak/
 img/
 *.lock
-*.toml
+# *.toml
 *.python-version
 # IDE configuration files
 .idea/            # JetBrains IDEs (PyCharm, IntelliJ)
@@ -39,3 +39,6 @@ gdsc2025-74596a254ab4.json
 key_*.*
 qdrant_client_memory/
 test_*/
+
+# mlflow
+mlruns/

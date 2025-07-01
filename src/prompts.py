@@ -62,3 +62,66 @@ Instructions:
 - If the context doesn't contain relevant information for factual questions, say so clearly and provide what you can from your general knowledge
 - Be natural and conversational while being informative and comprehensive
 - Focus on answering the user's question rather than describing the document structure"""
+
+
+QUERY_ANALYSIS_PROMPT = """
+You are an expert document analyst. Your task is to analyze the user query and determine which document sources and types are most relevant.
+
+Guidelines:
+- Only suggest sources and types that actually exist in the document collection
+- Be specific and relevant to the query content
+- Provide reasoning for your choices
+- If uncertain, indicate lower confidence score
+- DO NOT return any page numbers - focus only on sources and types
+- For sources, you can suggest partial filenames (without extensions) if the user refers to them that way
+
+User Query: {query}
+{context_info}
+
+{format_instructions}
+
+Important: Return only valid JSON format as specified above. Do not include pages in your response.
+"""
+
+GRAPH_SYSTEM_LLM_PARSER = """Your task is to act as an expert information extractor. From the provided INPUT_TEXT, you will extract a knowledge graph.
+
+The output must be a JSON object with a single key "graph", which contains a list of structured objects. Each object represents a relationship triplet and must have the following keys: 'h', 'type_h', 'r', 'o', 'type_t'.
+
+GUIDELINES:
+1. 'h' (head) and 'o' (tail) are the entities.
+2. 'type_h' and 'type_t' are the general categories. You must infer these types. Types should be concise, capitalized, singular nouns (e.g., PERSON, COMPANY, VEHICLE, LOCATION, PRODUCT).
+3. **Crucially, identify abstract concepts like EVENTS (e.g., 'Battle of New York', 'Ultron's Attack') and PROTOCOLS (e.g., 'Sokovia Accords').**
+4. 'r' (relationship) is a short, active verb.
+  - For actions between entities, use verbs like: Drove, Invented, Created, Wields, Led, Defeated.
+  - **For cause-and-effect, use verbs like: Caused, LedTo, ResultedIn.**
+  - **For participation, use: ParticipatedIn.**
+5. **Entity Disambiguation**: Consolidate different names for the same entity.
+6. **Simplicity**: Keep entity names short and specific.
+
+EXAMPLE 1 (Business):
+- Input: 'The 2008 financial crisis led to the creation of the Dodd-Frank Act.'
+- Output:
+{{
+  "graph": [
+    {{ "h": "2008 Financial Crisis", "type_h": "EVENT", "r": "LedTo", "o": "Dodd-Frank Act", "type_t": "PROTOCOL" }}
+  ]
+}}
+
+EXAMPLE 2 (MCU - a more relevant example for you):
+- Input: 'The Battle of New York was a major conflict where the Avengers first assembled to fight Loki.'
+- Output:
+{{
+  "graph": [
+      {{ "h": "Avengers", "type_h": "GROUP", "r": "ParticipatedIn", "o": "Battle of New York", "type_t": "EVENT" }},
+      {{ "h": "Loki", "type_h": "PERSON", "r": "ParticipatedIn", "o": "Battle of New York", "type_t": "EVENT" }}
+  ]
+}}
+
+Your output MUST be a valid JSON object. Do not add any text before or after the JSON.
+
+{format_instructions}
+
+===========================================================
+INPUT_TEXT:
+{prompt_input}
+"""

@@ -11,7 +11,7 @@ from loguru import logger
 from markdown import markdown
 
 from .extract_tables import WDMMergedTable, WDMTable, full_pipeline, get_tables_from_pdf
-from ..setting import IGNORE_TABLES
+from ..setting import IGNORE_TABLES, ENRICH_TABLES
 
 def convert_markdown_to_df(markdown_text: str) -> pd.DataFrame:
     try:
@@ -87,7 +87,7 @@ class WDMPDFParser:
         self,
         pages: List[int] = None,
         merge_span_tables: bool = True,
-        enrich: bool = True,
+        enrich: bool = ENRICH_TABLES,
     ) -> List[Document]:
         all_tables: List[WDMMergedTable] = []
         if merge_span_tables or enrich:
@@ -155,6 +155,7 @@ class WDMPDFParser:
         documents: List[Document] = [
             Document(
                 page_content=convert_table2text(table),
+                # page_content=table['text'],
                 metadata={
                     "page": str(table["page"]) if isinstance(table["page"], int) else ",".join(map(str, table["page"])),
                     "source": table["source"],
@@ -168,7 +169,7 @@ class WDMPDFParser:
     def extract_text(self, pages: List[int] = None) -> List[Document]:
         """
         Extract text from PDF pages, with option to ignore text within tables.
-        Uses fallback mechanism: if IGNORE_TABLES=True fails, retry with IGNORE_TABLES=False.
+        Simple approach: loop through pages and skip if error occurs.
 
         Args:
             pages: List of page numbers to extract (1-indexed). If None, extracts all pages.
@@ -176,29 +177,10 @@ class WDMPDFParser:
         Returns:
             List of Document objects containing the extracted text.
         """
-        # First attempt with ignore_tables setting
-        try:
-            return self._extract_text_internal(pages)
-        except Exception as e:
-            if IGNORE_TABLES:
-                logger.warning(f"Text extraction with ignore_tables=True failed: {e}")
-                logger.info("Retrying with ignore_tables=False (fallback mode)")
-                try:
-                    return self._extract_text_internal(pages)
-                except Exception as fallback_error:
-                    logger.error(f"Both text extraction methods failed: {fallback_error}")
-                    return []
-            else:
-                logger.error(f"Text extraction failed: {e}")
-                return []
-
-    def _extract_text_internal(self, pages: List[int] = None) -> List[Document]:
-        """
-        Internal method to extract text from PDF pages.
-        """
         doc = pymupdf.open(self.file_path)
         if pages is None:
             pages = list(range(1, len(doc) + 1))
+        
         all_text: List[WDMText] = []
 
         try:
@@ -209,18 +191,21 @@ class WDMPDFParser:
                     
                     if IGNORE_TABLES:
                         # Find tables and create redaction annotations
-                        table_bboxes = []
-                        for tab in page.find_tables(strategy="lines_strict"):
-                            table_bboxes.append(tab.bbox)
-                            page.add_redact_annot(tab.bbox)
+                        tables = page.find_tables(strategy="lines").tables
+                        if tables:
+                            for tab in tables:
+                                # process the content of table 'tab'
+                                page.add_redact_annot(tab.bbox)  # wrap table in a redaction annotation
+
+                            page.apply_redactions()  # erase all table text
                         
-                        # Only apply redactions if we found tables
-                        if table_bboxes:
-                            page.apply_redactions()
-                    
                     # Extract text content
-                    text_content = page.get_text()
-                    
+                    text_content = page.get_text().strip()
+                    if not text_content:
+                        if self.debug:
+                            logger.warning(f"Source: {self.file_path}, Page {page_number} is empty")
+                        continue
+                        
                     all_text.append(
                         WDMText(
                             text=text_content, 
@@ -235,19 +220,10 @@ class WDMPDFParser:
                         logger.info(f"Extracted text from page {page_number} ({mode}): {char_count} characters")
                         
                 except Exception as e:
-                    # If we're in ignore_tables mode and get an error, raise it to trigger fallback
-                    if IGNORE_TABLES and ("not a textpage" in str(e) or "textpage" in str(e)):
-                        raise e
-                    
-                    logger.warning(f"Failed to extract text from page {page_number}: {e}")
-                    # Continue with empty text for this page
-                    all_text.append(
-                        WDMText(
-                            text="", 
-                            page=page_number, 
-                            source=self.file_path
-                        )
-                    )
+                    if self.debug:
+                        logger.warning(f"Failed to extract text from page {page_number}: {e}")
+                    # Skip this page and continue with next one
+                    continue
                     
         finally:
             doc.close()
@@ -272,7 +248,7 @@ class WDMPDFParser:
         return documents
     
     
-    # Phát triển sau trong tương lai 
+    # TODO: Phát triển tính năng trích xuất hình ảnh
     # def extract_images(
     #     self, pages: List[int] = None, stored_path: str = None
     # ) -> List[WDMImage]:
