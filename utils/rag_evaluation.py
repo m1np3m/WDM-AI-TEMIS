@@ -20,6 +20,8 @@ from ragas.metrics import (
     NonLLMContextPrecisionWithReference,
 )
 from .rag_metrics import *
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 def run_ragas_eval(
     eval_df,
@@ -29,16 +31,38 @@ def run_ragas_eval(
     response_generation_function = "",
     num_docs=5,
     reranker_function=None,
-    path="ragas_eval.csv"
+    path="ragas_eval.csv",
+    use_optimized_metrics=True,
+    max_concurrent_requests=20  # Limit concurrent requests to prevent RAM overflow
 ):
     eval_df = eval_df.rename(columns={"question": "input", "answer": "ground_truth", "context": "reference_contexts"})
     print("Running Context Retrieve...")
 
-    eval_df['contexts'] = eval_df['input'].apply(
-        lambda q: doc_retrieval_function(collection_name, q, embedding_model_name, num_documents=num_docs, reranker = reranker_function)
-    )
-    eval_df["reference_contexts"] = eval_df["reference_contexts"].apply(lambda x: [x] if isinstance(x, str) else x)
+    # Optimize context retrieval with controlled concurrency
+    async def async_retrieve_contexts():
+        # Use semaphore to limit concurrent requests
+        semaphore = asyncio.Semaphore(max_concurrent_requests)
+        
+        async def retrieve_single_context(question):
+            async with semaphore:  # Limit concurrent operations
+                # Run retrieval in thread pool to avoid blocking
+                loop = asyncio.get_event_loop()
+                with ThreadPoolExecutor(max_workers=1) as executor:  # Limit threads per operation
+                    return await loop.run_in_executor(
+                        executor,
+                        lambda: doc_retrieval_function(collection_name, question, embedding_model_name, num_documents=num_docs, reranker=reranker_function)
+                    )
+        
+        # Process all questions with controlled concurrency
+        tasks = [retrieve_single_context(question) for question in eval_df['input']]
+        print(f"Processing {len(tasks)} questions with max {max_concurrent_requests} concurrent requests...")
+        return await asyncio.gather(*tasks)
 
+    # Run async context retrieval
+    contexts = asyncio.run(async_retrieve_contexts())
+    eval_df['contexts'] = contexts
+    
+    eval_df["reference_contexts"] = eval_df["reference_contexts"].apply(lambda x: [x] if isinstance(x, str) else x)
 
     print("Running Oputput Generate...")
 
@@ -58,8 +82,6 @@ def run_ragas_eval(
     context_precision =NonLLMContextPrecisionWithReference()
     context_recall = NonLLMContextRecall()
 
-
-
     print("Running RAGAS evaluation...")
     run_config = RunConfig(timeout=120, max_workers=63)
 
@@ -72,8 +94,17 @@ def run_ragas_eval(
     )
 
     df_results = results.to_pandas()
-    df_results['hit_rate'] = calculate_semantic_hit_rate(eval_df, top_k=num_docs)
-    df_results['mrr'] = calculate_semantic_mrr(eval_df)
+    
+    # Use optimized metrics if enabled
+    if use_optimized_metrics:
+        print("Running optimized semantic metrics calculation (async only)...")
+        df_results['hit_rate'] = asyncio.run(async_semantic_hit_rate(eval_df, top_k=num_docs))
+        df_results['mrr'] = asyncio.run(async_semantic_mrr(eval_df))
+    else:
+        print("Running original semantic metrics calculation...")
+        df_results['hit_rate'] = calculate_semantic_hit_rate(eval_df, top_k=num_docs)
+        df_results['mrr'] = calculate_semantic_mrr(eval_df)
+    
     df_results = df_results.rename(columns={
         "non_llm_context_precision_with_reference": "context_precision",     
         "non_llm_context_recall": "context_recall"
@@ -134,7 +165,7 @@ def plot_experiment_comparison(experiment_results_list, experiment_names, metric
     ax.tick_params(axis='x', rotation=45)
 
     for container in ax.containers:
-        ax.bar_label(container, fmt="%.2f", rotation=60)
+        ax.bar_label(container, fmt="%.3f", rotation=90)
 
     plt.tight_layout()
     plt.show()
