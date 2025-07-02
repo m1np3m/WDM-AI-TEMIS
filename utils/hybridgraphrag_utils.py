@@ -2,8 +2,9 @@ from neo4j import GraphDatabase
 from qdrant_client import QdrantClient
 import os
 from neo4j_graphrag.retrievers import QdrantNeo4jRetriever
-
-class GraphRAG:
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())
+class HybridGraphRAG:
     def __init__(self):
         self.qdrant_key = os.getenv("QDRANT_KEY")
         self.qdrant_url = os.getenv("QDRANT_URL")
