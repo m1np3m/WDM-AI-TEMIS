@@ -78,7 +78,7 @@ class Reranker:
             "cohere": self.cohere_reranker,
             "bce": self.bce_reranker,
             "pretrained_bge": self.pretrained_bge_reranker,
-            "finetune_bge": self.finetune_bge_reranker,
+            # "finetune_bge": self.finetune_bge_reranker,
             "flashrank": self.flashrank_reranker,
             "st-crossencoder": self.st_crossencoder_reranker,
         }
