@@ -3,7 +3,7 @@ import atexit
 import logging
 import os
 import time
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from langchain.output_parsers import PydanticOutputParser
 from langchain_core.documents import Document
@@ -13,7 +13,7 @@ from langfuse import Langfuse
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from .file_loader import PDFLoader
+from .WDMParser.WDMParser import WDMPDFParser, process_pdf_documents
 from .prompts import GENERATE_PROMPT, QUERY_ANALYSIS_PROMPT
 from .reranker import Reranker
 from .setting import REANKER_MODEL_NAME, K
@@ -69,6 +69,7 @@ class RAG:
             self.reranker_name = REANKER_MODEL_NAME
         else:
             self.reranker = None
+            self.reranker_name = "Disabled"
         self.langfuse = langfuse_client
 
     def _format_time(self, seconds):
@@ -84,50 +85,126 @@ class RAG:
             minutes = (seconds % 3600) // 60
             return f"{int(hours)}h {int(minutes)}m"
 
-    async def _process_pdf_async(self, pdf_file_path, loader, debug_mode=False):
-        """Asynchronous wrapper for PDF processing"""
+    async def process_pdfs_bytes(
+        self,
+        pdf_data_list: Union[List[str], List[bytes], List[Union[str, bytes]]],
+        credential_path: Optional[str] = None,
+        debug_mode: bool = False,
+    ) -> tuple:
+        """
+        Process multiple PDF files/bytes using the new WDMParser with async support
+        
+        Args:
+            pdf_data_list: List of PDF file paths or bytes data
+            credential_path: Path to Google Cloud credentials
+            debug_mode: Enable debug logging
+            
+        Returns:
+            Tuple of (all_documents, processing_results, stats)
+        """
         start_time = time.time()
+        
         try:
-            logger.info(f"Starting processing {pdf_file_path}")
-
-            # Chạy phần load trong executor để không block event loop
-            loop = asyncio.get_event_loop()
-            splits = await loop.run_in_executor(
-                None,
-                lambda: loader.load(
-                    path_string=pdf_file_path,
-                    original_filename=os.path.basename(pdf_file_path),
-                ),
+            # Use the new WDMParser with bytes support
+            settings = WDMPDFParser.create_settings(
+                credential_path=credential_path,
+                debug=debug_mode,
+                debug_level=1,
+                max_concurrent_files=3,
+                max_memory_mb=8192,
+                batch_size=5,
+                cleanup_interval=2
+            )
+            
+            parser = WDMPDFParser(settings=settings)
+            
+            # Process documents async
+            result = await parser.process_documents(
+                pdf_documents=pdf_data_list,
+                merge_span_tables=True,
+                enrich=False,
+                extract_text=True,
+                return_failed=True
             )
 
-            processing_time = time.time() - start_time
+            # Handle tuple return type
+            if isinstance(result, tuple):
+                results, failed_files = result
+            else:
+                results = result
+                failed_files = []
+            
+            # Combine all documents
+            all_documents = []
+            processing_results = []
+            
+            for identifier, documents in results.items():
+                # Create result object similar to old format
+                table_docs = [d for d in documents if d.metadata.get('type') == 'table']
+                text_docs = [d for d in documents if d.metadata.get('type') == 'text']
+                
+                processing_results.append({
+                    "file_name": identifier,
+                    "success": True,
+                    "splits": documents,
+                    "count": len(documents),
+                    "table_docs": len(table_docs),
+                    "text_docs": len(text_docs),
+                    "processing_time": 0,  # Not tracked per file in new system
+                    "file_size_mb": 0,     # Not tracked per file in new system
+                })
+                
+                all_documents.extend(documents)
+            
+            # Add failed files to results
+            for failed_file in failed_files:
+                processing_results.append({
+                    "file_name": failed_file,
+                    "success": False,
+                    "error": "Processing failed",
+                    "splits": [],
+                    "count": 0,
+                    "table_docs": 0,
+                    "text_docs": 0,
+                    "processing_time": 0,
+                    "file_size_mb": 0,
+                })
+            
+            # Calculate summary stats
+            total_time = time.time() - start_time
+            successful_files = len([r for r in processing_results if r["success"]])
+            total_docs = len(all_documents)
+            text_docs = len([doc for doc in all_documents if doc.metadata.get("type") == "text"])
+            table_docs = len([doc for doc in all_documents if doc.metadata.get("type") == "table"])
+            
+            stats = {
+                "successful_files": successful_files,
+                "total_files": len(pdf_data_list),
+                "total_docs": total_docs,
+                "text_docs": text_docs,
+                "table_docs": table_docs,
+                "total_time": total_time,
+            }
 
             logger.info(
-                f"Completed {pdf_file_path} in {processing_time:.1f}s - {len(splits)} documents"
+                f"Processing completed: {successful_files}/{len(pdf_data_list)} files, "
+                f"{total_docs} documents, {self._format_time(total_time)}"
             )
 
-            return {
-                "file_name": os.path.basename(pdf_file_path),
-                "success": True,
-                "splits": splits,
-                "count": len(splits),
-                "processing_time": processing_time,
-                "file_size_mb": os.path.getsize(pdf_file_path) / (1024 * 1024),
-            }
+            return all_documents, processing_results, stats
+            
         except Exception as e:
-            processing_time = time.time() - start_time
-            logger.error(
-                f"Error processing {pdf_file_path} after {processing_time:.1f}s: {str(e)}"
-            )
-            return {
-                "file_name": os.path.basename(pdf_file_path),
-                "success": False,
-                "error": str(e),
-                "splits": [],
-                "processing_time": processing_time,
-                "file_size_mb": os.path.getsize(pdf_file_path) / (1024 * 1024),
+            logger.error(f"Error in process_pdfs_bytes: {e}")
+            return [], [], {
+                "successful_files": 0,
+                "total_files": len(pdf_data_list),
+                "total_docs": 0,
+                "text_docs": 0,
+                "table_docs": 0,
+                "total_time": time.time() - start_time,
             }
 
+    # Keep the old method for backward compatibility
     async def load_pdfs(
         self,
         pdf_files: List[str],
@@ -135,73 +212,11 @@ class RAG:
         temp_dir: Optional[str] = None,
         debug_mode: bool = False,
     ):
-        """Process multiple PDF files asynchronously"""
-        loader = PDFLoader(
-            credential_path=credential_path or "",
-            debug=debug_mode,
-            temp_dir=temp_dir or "",
-            enrich=False,
-        )
-
-        all_splits = []
-
-        start_time = time.time()
-
-        # Tạo các task bất đồng bộ cho mỗi file PDF
-        tasks = [
-            self._process_pdf_async(pdf_file_path, loader, debug_mode)
-            for pdf_file_path in pdf_files
-        ]
-
-        # Chạy tất cả tasks bất đồng bộ
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Xử lý kết quả
-        processed_results = []
-        for result in results:
-            if isinstance(result, Exception):
-                # Nếu có exception, tạo result object với thông tin lỗi
-                processed_results.append(
-                    {
-                        "file_name": "unknown",
-                        "success": False,
-                        "error": str(result),
-                        "splits": [],
-                        "processing_time": 0,
-                        "file_size_mb": 0,
-                    }
-                )
-            else:
-                processed_results.append(result)
-                if isinstance(result, dict) and result.get("success", False):
-                    all_splits.extend(result.get("splits", []))
-
-        total_time = time.time() - start_time
-        successful_files = len([r for r in processed_results if r.get("success", False)])
-        total_docs = sum(r.get("count", 0) for r in processed_results if r.get("success", False))
-        text_docs = len(
-            [doc for doc in all_splits if doc.metadata.get("type") == "text"]
-        )
-        table_docs = len(
-            [doc for doc in all_splits if doc.metadata.get("type") == "table"]
-        )
-
-        logger.info(
-            f"Processing completed: {successful_files}/{len(pdf_files)} files, {total_docs} documents, {self._format_time(total_time)}"
-        )
-
-        return (
-            all_splits,
-            processed_results,
-            {
-                "successful_files": successful_files,
-                "total_files": len(pdf_files),
-                "total_docs": total_docs,
-                "text_docs": text_docs,
-                "table_docs": table_docs,
-                "total_time": total_time,
-            },
-        )
+        """
+        Process multiple PDF files asynchronously (backward compatibility method)
+        Now uses the new WDMParser internally
+        """
+        return await self.process_pdfs_bytes(pdf_files, credential_path, debug_mode)
 
     def add_documents(
         self,
@@ -232,7 +247,7 @@ class RAG:
         filter_types: Optional[List[str]] = None,        
     ):
         
-        if not self.use_reranker:
+        if not self.use_reranker or self.reranker is None:
             return self.vectorstore.retrieve_documents(
                 query=query, filter_sources=filter_sources, filter_types=filter_types
             )
@@ -248,12 +263,14 @@ class RAG:
             
             # Map back using indices to handle duplicates properly
             reranked_docs = []
+            used_indices = set()
+            
             for reranked_content in reranked_contents:
-                # Find first occurrence of this content
+                # Find first unused occurrence of this content
                 for i, original_content in enumerate(contents):
-                    if original_content == reranked_content and i < len(docs):
+                    if original_content == reranked_content and i not in used_indices and i < len(docs):
                         reranked_docs.append(docs[i])
-                        contents[i] = None  # Mark as used to avoid duplicates
+                        used_indices.add(i)
                         break
             
             # Add this for debugging

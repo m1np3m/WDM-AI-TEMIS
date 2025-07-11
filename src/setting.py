@@ -9,3 +9,9 @@ ENRICH_TABLES = False
 
 # Reranker
 REANKER_MODEL_NAME = "bce"
+
+
+# Cấu hình của LLM
+LLM_CONFIG = {
+    
+}

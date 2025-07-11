@@ -6,12 +6,12 @@ from langchain.docstore.document import Document
 from langchain_qdrant import QdrantVectorStore, RetrievalMode, FastEmbedSparse
 from langchain_google_vertexai import VertexAIEmbeddings
 from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter, CharacterTextSplitter
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.models import Distance, VectorParams, SparseVectorParams
 from loguru import logger
 
-from .file_loader import TextSplitter
-from .setting import K
+from .setting import K, CHUNK_SIZE, CHUNK_OVERLAP
 
 
 class QdrantClientManager:
@@ -36,6 +36,38 @@ class QdrantClientManager:
             except Exception as e:
                 logger.warning(f"Error closing client for {path}: {e}")
         cls._clients.clear()
+
+
+class TextSplitter:
+    def __init__(
+        self,
+        chunk_type: str = "recursive",
+        separators: List[str] = ["\n\n", "\n", ". ", "! ", "? ", ":", ";", " "],
+        chunk_size: int = CHUNK_SIZE,
+        chunk_overlap: int = CHUNK_OVERLAP,
+        separator: str = "\n\n",
+    ) -> None:
+        self.chunk_type = chunk_type
+        
+        if chunk_type == "recursive":
+            self.splitter = RecursiveCharacterTextSplitter(
+                separators=separators,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                add_start_index=True,
+            )
+        elif chunk_type == "character":
+            self.splitter = CharacterTextSplitter(
+                separator=separator,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                add_start_index=True,
+            )
+        else:
+            raise ValueError(f"Unsupported chunk_type: {chunk_type}. Use 'recursive' or 'character'.")
+
+    def __call__(self, documents: List[Document]) -> List[Document]:
+        return self.splitter.split_documents(documents)
 
 
 class VectorStore:
@@ -65,6 +97,9 @@ class VectorStore:
         # Initialize sparse embeddings for hybrid search
         if self.enable_hybrid_search:
             self.sparse_embeddings = FastEmbedSparse(model_name="Qdrant/bm25")
+        
+        # Initialize text splitter
+        self.text_splitter = TextSplitter(chunk_type=chunk_type)
         
         self.sources = set()
         self.vectorstore = None
@@ -274,16 +309,26 @@ class VectorStore:
             placeholder_doc = Document(
                 page_content="Placeholder content", metadata={"source": "placeholder"}
             )
-            text_splitter = TextSplitter(chunk_type=self.chunk_type)
-            doc_splits = text_splitter(documents=[placeholder_doc])
+            doc_splits = self.text_splitter([placeholder_doc])
         else:
             # Process the provided documents
             logger.info(
                 f"Creating vectorstore from {len(docs_list) if isinstance(docs_list, list) else 1} document(s)..."
             )
-            text_splitter = TextSplitter(chunk_type=self.chunk_type)
             docs_to_process = docs_list if isinstance(docs_list, list) else [docs_list]
-            doc_splits = text_splitter(documents=docs_to_process)
+            
+            # Separate text and table documents for different handling
+            text_documents = [doc for doc in docs_to_process if doc.metadata.get("type") == "text"]
+            table_documents = [doc for doc in docs_to_process if doc.metadata.get("type") == "table"]
+            
+            # Apply text splitter only to text documents
+            split_text_documents = self.text_splitter(text_documents) if text_documents else []
+            
+            # Combine split text documents with whole table documents
+            doc_splits = split_text_documents + table_documents
+            
+            logger.info(f"Text documents split into {len(split_text_documents)} chunks")
+            logger.info(f"Table documents kept whole: {len(table_documents)} tables")
 
         # Ensure collection exists before creating vectorstore
         self._ensure_collection_exists(client)
@@ -326,10 +371,21 @@ class VectorStore:
         
         try:
             client = self._get_client()
+            
+            # Separate text and table documents for different handling
+            text_documents = [doc for doc in documents if doc.metadata.get("type") == "text"]
+            table_documents = [doc for doc in documents if doc.metadata.get("type") == "table"]
+            
+            # Apply text splitter only to text documents  
+            split_text_documents = self.text_splitter(text_documents) if text_documents else []
+            
+            # Combine split text documents with whole table documents
+            processed_docs = split_text_documents + table_documents
+            
             new_docs = []
             new_ids = []
             
-            for doc in documents:
+            for doc in processed_docs:
                 doc_id = hashlib.md5(doc.page_content.encode()).hexdigest()
                 
                 # Check if document already exists
@@ -349,7 +405,8 @@ class VectorStore:
             if new_docs:
                 self.vectorstore.add_documents(documents=new_docs, ids=new_ids)
                 self._update_sources(new_docs)
-                logger.info(f"Successfully added {len(new_docs)} new documents to vectorstore")
+                logger.info(f"Successfully added {len(new_docs)} new documents to vectorstore "
+                           f"({len(split_text_documents)} text chunks, {len(table_documents)} tables)")
             else:
                 logger.info("No new documents to add; all were duplicates")
                 
@@ -478,8 +535,7 @@ class VectorStore:
             placeholder_doc = Document(
                 page_content="Placeholder content", metadata={"source": "placeholder"}
             )
-            text_splitter = TextSplitter(chunk_type=self.chunk_type)
-            doc_splits = text_splitter(documents=[placeholder_doc])
+            doc_splits = self.text_splitter([placeholder_doc])
 
             # Recreate vectorstore with placeholder
             if self.enable_hybrid_search:

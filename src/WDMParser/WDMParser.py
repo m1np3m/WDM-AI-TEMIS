@@ -201,7 +201,7 @@ class WDMPDFParser:
                         logger.info(f"Processing PDF from bytes ({len(pdf_data)} bytes)")
                 else:
                     source_name = pdf_data
-                    if self.debug:
+                if self.debug:
                         logger.info(f"Processing PDF from file: {os.path.basename(pdf_data)}")
                 
                 # Check memory before processing
@@ -361,9 +361,9 @@ class WDMPDFParser:
                     if IGNORE_TABLES:
                         try:
                             # Attempt to locate tables and redact them.
-                            tables = page.find_tables(strategy="lines_strict").tables
-                            if tables:
-                                for tab in tables:
+                        tables = page.find_tables(strategy="lines_strict").tables
+                        if tables:
+                            for tab in tables:
                                     page.add_redact_annot(tab.bbox)
 
                                 page.apply_redactions()
