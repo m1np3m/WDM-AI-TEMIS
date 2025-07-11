@@ -2,7 +2,7 @@ import asyncio
 import os
 import sys
 import time
-from typing import List
+from typing import List, Optional
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -15,6 +15,7 @@ from loguru import logger
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src import RAG
+from src.WDMParser.WDMParser import WDMPDFParser
 
 st.set_page_config(
     page_title="WDM-AI-TEMIS - RAG Chatbot",
@@ -82,12 +83,10 @@ def initialize_rag(
 
 # ============================== USEFUL FUNCTIONS ==============================
 
-
 def clear_history():
     if "messages" in st.session_state:
         st.session_state.messages = []
     st.success("History cleared!")
-
 
 def clear_rag_cache():
     """Clear RAG cache và reinitialize"""
@@ -100,11 +99,103 @@ def clear_rag_cache():
     st.success("RAG cache cleared! Page will refresh to reinitialize.")
     st.rerun()
 
-
-# prepare_context function không cần thiết nữa vì RAG class đã có sẵn
+async def process_pdfs_with_streamlit(pdf_files: List, credential_path: Optional[str] = None) -> List[Document]:
+    """
+    Process PDF files using the new WDMParser with bytes support
+    
+    Args:
+        pdf_files: List of Streamlit UploadedFile objects
+        credential_path: Path to Google Cloud credentials (can be None)
+        
+    Returns:
+        List of processed documents
+    """
+    if not pdf_files:
+        return []
+    
+    # Create parser settings
+    settings = WDMPDFParser.create_settings(
+        credential_path=credential_path if credential_path else "",
+        debug=True,
+        debug_level=1,
+        max_concurrent_files=2,  # Conservative for web apps
+        max_memory_mb=2048,      # 2GB limit for web apps
+        batch_size=3,
+        cleanup_interval=2
+    )
+    
+    parser = WDMPDFParser(settings=settings)
+    
+    # Convert uploaded files to bytes
+    pdf_bytes_list = []
+    file_names = []
+    
+    for pdf_file in pdf_files:
+        try:
+            pdf_bytes = pdf_file.getvalue()
+            pdf_bytes_list.append(pdf_bytes)
+            file_names.append(pdf_file.name)
+        except Exception as e:
+            st.error(f"Error reading {pdf_file.name}: {e}")
+            continue
+    
+    if not pdf_bytes_list:
+        st.error("No valid PDF files to process")
+        return []
+    
+    try:
+        # Process all PDFs asynchronously with bytes
+        results = await parser.process_documents(
+            pdf_documents=pdf_bytes_list,
+            merge_span_tables=True,
+            enrich=False,  # Disable for faster web processing
+            extract_text=True,
+            return_failed=False
+        )
+        
+        # Handle potential tuple return from process_documents
+        if isinstance(results, tuple):
+            results_dict, failed_files = results
+        else:
+            results_dict = results
+        
+        # Combine all documents from all files
+        all_documents = []
+        total_tables = 0
+        total_text = 0
+        
+        for identifier, documents in results_dict.items():
+            # Update source metadata to use original filename
+            file_index = int(identifier.replace("<in-memory-", "").replace(">", ""))
+            original_filename = file_names[file_index] if file_index < len(file_names) else f"file_{file_index}"
+            
+            for doc in documents:
+                doc.metadata['source'] = original_filename
+                all_documents.append(doc)
+            
+            table_docs = [d for d in documents if d.metadata.get('type') == 'table']
+            text_docs = [d for d in documents if d.metadata.get('type') == 'text']
+            
+            total_tables += len(table_docs)
+            total_text += len(text_docs)
+        
+        # Show processing summary
+        st.success(f"✅ Successfully processed {len(pdf_files)} PDF files!")
+        st.info(f"📊 Extracted: {total_tables} tables, {total_text} text blocks ({len(all_documents)} total documents)")
+        
+        # Show memory usage
+        memory_info = parser.get_memory_info()
+        if 'error' not in memory_info:
+            st.info(f"💾 Memory usage: {memory_info['rss_mb']:.1f}MB")
+        
+        return all_documents
+        
+    except Exception as e:
+        st.error(f"❌ Error processing PDFs: {e}")
+        logger.error(f"PDF processing error: {e}")
+        return []
 
 # ============================== MAIN FUNCTION ================================
-
 
 def main():
     st.title("🤖 WDM-AI-TEMIS - RAG Chatbot")
@@ -249,29 +340,18 @@ def main():
             help="Show detailed logging information during PDF processing",
         )
 
-        # Add credential path input
+        # Add credential path input - simplified
         if "GOOGLE_APPLICATION_CREDENTIALS" in os.environ:
             credential_path = os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
-            st.info(f"✅ Using credentials from environment: {credential_path}")
+            st.info(f"✅ Using credentials from environment")
             cred_path = credential_path
         else:
             credential_path = st.text_input(
                 "Google Service Account Credentials Path (Optional)",
-                placeholder="/path/to/service-account-key.json",
-                help="Required for advanced table extraction features (merge_span_tables, enrich). Leave empty for basic table extraction.",
+                placeholder="key_vertex.json",
+                help="Required for advanced table extraction features. Leave empty for basic table extraction.",
             )
-            cred_path = (
-                credential_path.strip()
-                if credential_path and credential_path.strip()
-                else None
-            )
-
-        # Add custom temp directory option
-        temp_dir = st.text_input(
-            "Custom Temporary Directory (Optional)",
-            placeholder="/tmp/pdf_processing",
-            help="Specify a custom directory for temporary files. Leave empty to use system default.",
-        )
+            cred_path = credential_path.strip() if credential_path and credential_path.strip() else None
 
         pdf_files = st.file_uploader(
             "Upload PDF", type="pdf", accept_multiple_files=True
@@ -280,9 +360,7 @@ def main():
         if pdf_files:
             if st.button("🚀 Process PDFs", type="primary"):
                 if not st.session_state.rag:
-                    st.error(
-                        "❌ Vector database not initialized. Please check settings above."
-                    )
+                    st.error("❌ Vector database not initialized. Please check settings above.")
                     st.stop()
 
                 # Validate credential path if provided
@@ -290,157 +368,30 @@ def main():
                     st.error(f"❌ Credentials file not found: {cred_path}")
                     st.stop()
 
-                # Validate temp directory if provided
-                temp_dir_path = (
-                    temp_dir.strip() if temp_dir and temp_dir.strip() else None
-                )
-                if temp_dir_path and not os.path.exists(temp_dir_path):
+                # Process PDFs using new WDMParser with bytes
+                with st.spinner(f"🔄 Processing {len(pdf_files)} PDF files with enhanced parser..."):
                     try:
-                        os.makedirs(temp_dir_path, exist_ok=True)
-                        st.info(f"📁 Created temporary directory: {temp_dir_path}")
-                    except Exception as e:
-                        st.error(
-                            f"❌ Failed to create temp directory {temp_dir_path}: {e}"
-                        )
-                        st.stop()
-
-                # Process PDFs using same approach as main.py (file objects)
-                with st.spinner(f"Processing {len(pdf_files)} PDF files..."):
-                    try:
-                        # Import required modules
-                        import concurrent.futures
-                        from concurrent.futures import ThreadPoolExecutor
-
-                        from src.file_loader import PDFLoader
-
-                        def process_pdf_sync(pdf_file, loader, debug_mode=False):
-                            """Process single PDF file - same as main.py"""
-                            start_time = time.time()
-                            try:
-                                logger.info(f"Starting processing {pdf_file.name}")
-                                # Sử dụng pdf_file object trực tiếp như main.py
-                                splits = loader.load(
-                                    pdf_file=pdf_file, original_filename=pdf_file.name
-                                )
-                                processing_time = time.time() - start_time
-
-                                logger.info(
-                                    f"Completed {pdf_file.name} in {processing_time:.1f}s - {len(splits)} documents"
-                                )
-
-                                return {
-                                    "file_name": pdf_file.name,
-                                    "success": True,
-                                    "splits": splits,
-                                    "count": len(splits),
-                                    "processing_time": processing_time,
-                                    "file_size_mb": len(pdf_file.getvalue())
-                                    / (1024 * 1024),
-                                }
-                            except Exception as e:
-                                processing_time = time.time() - start_time
-                                logger.error(
-                                    f"Error processing {pdf_file.name} after {processing_time:.1f}s: {str(e)}"
-                                )
-                                return {
-                                    "file_name": pdf_file.name,
-                                    "success": False,
-                                    "error": str(e),
-                                    "splits": [],
-                                    "processing_time": processing_time,
-                                    "file_size_mb": len(pdf_file.getvalue())
-                                    / (1024 * 1024),
-                                }
-
-                        # Create loader same as main.py
-                        loader = PDFLoader(
-                            credential_path=cred_path,
-                            debug=debug_mode,
-                            temp_dir=temp_dir_path,
-                            enrich=False,
+                        # Run async processing
+                        all_documents = asyncio.run(
+                            process_pdfs_with_streamlit(pdf_files, cred_path)
                         )
 
-                        all_splits = []
-                        results = []
-
-                        start_time = time.time()
-
-                        # Process concurrently same as main.py
-                        with ThreadPoolExecutor(max_workers=3) as executor:
-                            # Submit all tasks
-                            future_to_file = {
-                                executor.submit(
-                                    process_pdf_sync, pdf_file, loader, debug_mode
-                                ): pdf_file
-                                for pdf_file in pdf_files
-                            }
-
-                            # Wait for completion and collect results
-                            for future in concurrent.futures.as_completed(
-                                future_to_file
-                            ):
-                                result = future.result()
-                                results.append(result)
-
-                                if result["success"]:
-                                    all_splits.extend(result["splits"])
-
-                        # Calculate summary stats same as main.py
-                        total_time = time.time() - start_time
-                        successful_files = len([r for r in results if r["success"]])
-                        total_docs = sum(r["count"] for r in results if r["success"])
-                        text_docs = len(
-                            [
-                                doc
-                                for doc in all_splits
-                                if doc.metadata.get("type") == "text"
-                            ]
-                        )
-                        table_docs = len(
-                            [
-                                doc
-                                for doc in all_splits
-                                if doc.metadata.get("type") == "table"
-                            ]
-                        )
-
-                        stats = {
-                            "successful_files": successful_files,
-                            "total_files": len(pdf_files),
-                            "total_docs": total_docs,
-                            "text_docs": text_docs,
-                            "table_docs": table_docs,
-                            "total_time": total_time,
-                        }
-
-                        if all_splits:
+                        if all_documents:
                             # Add documents to vectorstore
                             try:
-                                with st.spinner(
-                                    "Adding documents to vector database..."
-                                ):
-                                    st.session_state.rag.add_documents(
-                                        documents=all_splits
-                                    )
+                                with st.spinner("📥 Adding documents to vector database..."):
+                                    st.session_state.rag.add_documents(documents=all_documents)
 
                                 st.success(
-                                    f"🎉 Successfully processed {stats['successful_files']}/{stats['total_files']} PDF(s)!\n\n"
-                                    f"📄 **Total documents:** {stats['total_docs']} "
-                                    f"({stats['text_docs']} text, {stats['table_docs']} tables) | "
-                                    f"⏱️ **Time:** {st.session_state.rag._format_time(stats['total_time'])}\n\n"
-                                    f"✅ **Added to vector database:** {len(all_splits)} documents"
+                                    f"🎉 Successfully processed and added {len(all_documents)} documents to the knowledge base!\n\n"
+                                    f"📚 **Ready for questions!** You can now ask about the content of your PDF files."
                                 )
 
                             except Exception as e:
-                                st.error(
-                                    f"❌ Error adding documents to vector database: {e}"
-                                )
+                                st.error(f"❌ Error adding documents to vector database: {e}")
                                 logger.error(f"Vectorstore add_documents error: {e}")
-
                         else:
-                            st.error(
-                                "❌ No documents were extracted from the PDF files."
-                            )
+                            st.error("❌ No documents were extracted from the PDF files.")
 
                     except Exception as e:
                         st.error(f"❌ Error processing PDFs: {e}")
@@ -517,15 +468,11 @@ def main():
 
                             if docs:
                                 with st.expander("📄 Source Documents", expanded=True):
-                                    st.write(
-                                        f"**Total Retrieved: {len(docs)} documents**"
-                                    )
+                                    st.write(f"**Total Retrieved: {len(docs)} documents**")
                                     st.markdown("---")
 
                                     for i, doc in enumerate(docs, 1):
-                                        source = doc.metadata.get(
-                                            "source", "Unknown source"
-                                        )
+                                        source = doc.metadata.get("source", "Unknown source")
                                         page = doc.metadata.get("page", "Unknown page")
                                         doc_type = doc.metadata.get("type", "text")
 
@@ -554,9 +501,7 @@ def main():
                                     "🔍 Show Full Context",
                                     key=f"show_context_{len(st.session_state.messages)}",
                                 ):
-                                    with st.expander(
-                                        "📋 Full Context Sent to LLM", expanded=False
-                                    ):
+                                    with st.expander("📋 Full Context Sent to LLM", expanded=False):
                                         st.text(
                                             context[:2000] + "..."
                                             if len(context) > 2000
@@ -583,7 +528,6 @@ def main():
         with chat_col:
             with st.chat_message("assistant"):
                 st.markdown(response)
-
 
 if __name__ == "__main__":
     main()

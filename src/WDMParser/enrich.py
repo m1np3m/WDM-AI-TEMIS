@@ -264,8 +264,8 @@ class Enrich_VertexAI:
             )
         ]
         result = self.output_parser.invoke(self.llm.invoke(prompt))
-        # Add small delay after successful call to avoid overwhelming API
-        time.sleep(2)
+        # ENHANCED: Longer delay after successful call for enrichment to avoid rate limits
+        time.sleep(4)  # Increased from 2s to 4s for better rate limiting
         return result
 
     @retry_vertex_ai_call
@@ -324,14 +324,14 @@ class Enrich_VertexAI:
             )
         ]
         result = self.output_parser.invoke(self.llm.invoke(prompt))
-        # Add small delay after successful call to avoid overwhelming API
-        time.sleep(2)
+        # ENHANCED: Longer delay after successful call for enrichment to avoid rate limits
+        time.sleep(4)  # Increased from 2s to 4s for better rate limiting
         return result
 
     def enrich_image(self, base64_image, markdown_content):
         summary_content = self.prompt_for_summary(base64_image)
-        # Small delay between API calls
-        time.sleep(1)  
+        # ENHANCED: Longer delay between API calls for enrichment to avoid rate limits
+        time.sleep(3)  # Increased from 1s to 3s for better rate limiting
         return self.table_markdown_context(base64_image, markdown_content, summary_content)
 
     def full_pipeline(self, file_path, extract_table_markdown, result_path, verbose=1, return_markdown=False):
