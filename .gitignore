@@ -34,7 +34,7 @@ data/raw/
 data/processed/
 data/pdfs/
 gdsc2025-74596a254ab4.json
-
+serene-craft-464519-j1-963d43d7e20e.json
 # secret key
 key_*.*
 qdrant_client_memory/

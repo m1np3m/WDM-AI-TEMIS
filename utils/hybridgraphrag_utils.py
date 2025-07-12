@@ -50,6 +50,9 @@ class HybridGraphRAG:
             collection_name,
             query
         )
+        entity_ids = [item.content.split("'id': '")[1].split("'")[0] for item in results.items]
+        subgraph = self.fetch_related_graph(self.neo4j_driver, entity_ids)
+        graph_context = self.format_graph_context(subgraph)
         return results
 
     def full_pipeline(self, collection_name, query, mode='concise'):

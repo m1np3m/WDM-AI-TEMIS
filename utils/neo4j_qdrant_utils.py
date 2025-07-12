@@ -442,7 +442,7 @@ def graphRAG_run(graph_context, user_query, mode='concise'):
         print(f"Error querying LLM: {e}")
         from types import SimpleNamespace
         return SimpleNamespace(content=f"An error occurred: {str(e)}")
-    
+    self.llm.invoke(f"{sys_prompt}\n\n{user_prompt}")
 
 if __name__ == "__main__":
     print("Script started")
