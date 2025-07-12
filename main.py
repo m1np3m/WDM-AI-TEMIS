@@ -5,12 +5,14 @@ async def main():
     # Tạo RAG instance
     my_rag = RAG(
         embedding_type="huggingface",
-        embedding_model="BAAI/bge-base-en",
+        embedding_model="BAAI/bge-base-en", 
         enable_hybrid_search=True,
         chunk_type="character",
         use_memory=False,
         collection_name="wdm-ai-temis",
-        persist_dir="vs_main_script_huggingface_BAAI/bge-base-en_True_character_False_wdm-ai-temis"
+        persist_dir="./main_test_db",
+        use_reranker=True,
+        reranker_model_name="bce"
     )
     
     # Load PDFs và add vào vectorstore

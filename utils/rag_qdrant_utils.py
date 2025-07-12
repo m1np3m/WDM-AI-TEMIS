@@ -3,7 +3,7 @@ import time
 from typing import List, Optional, Callable
 import torch
 
-from langchain.vectorstores import Qdrant
+from langchain_community.vectorstores import Qdrant
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.text_splitter import (

@@ -1,0 +1,8 @@
+llama-index-graph-stores-neo4j
+llama-index-vector-stores-chroma
+llama-index-embeddings-huggingface
+llama-index-llms-openrouter
+python-dotenv
+sentence-transformers
+chromadb
+neo4j 

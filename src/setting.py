@@ -5,3 +5,7 @@ K = 7
 
 # Cấu hình của WDMParser
 IGNORE_TABLES = True
+ENRICH_TABLES = False
+
+# Reranker
+REANKER_MODEL_NAME = "bce"

@@ -362,6 +362,7 @@ class VectorStore:
         query: str,
         filter_sources: Optional[List[str]] = None,
         filter_types: Optional[List[str]] = None,
+        num_docs: Optional[int] = None,
     ):
         """
         Retrieve documents with optional filtering by sources and types
@@ -425,11 +426,17 @@ class VectorStore:
                     must=filter_conditions
                 )
             
-            # Use vectorstore search with filter
             try:
+                # If num_docs is provided, use it, otherwise use K
+                if num_docs:
+                    k = num_docs
+                else:
+                    k = K
+                    
+                # Use vectorstore search with filter
                 results = self.vectorstore.similarity_search(
                     query=query,
-                    k=K,
+                    k=k,
                     filter=final_filter
                 )
                 logger.info(f"Retrieved {len(results)} documents with filters - sources: {filter_sources}, types: {filter_types}")

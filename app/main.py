@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate
+from langfuse import Langfuse
 from loguru import logger
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -24,7 +25,29 @@ st.set_page_config(
 load_dotenv()
 
 # ============================== CACHED FUNCTIONS ==============================
+@st.cache_resource
+def initialize_langfuse():
+    """Cache Langfuse client."""
+    try:
+        public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
+        secret_key = os.getenv("LANGFUSE_SECRET_KEY")
+        host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
 
+        if not public_key or not secret_key:
+            logger.warning("Langfuse keys not found in .env file. Tracing will be disabled.")
+            return None
+            
+        client = Langfuse(
+            public_key=public_key,
+            secret_key=secret_key,
+            host=host
+        )
+        logger.info("Langfuse client initialized successfully.")
+        return client
+    except Exception as e:
+        logger.error(f"Langfuse initialization error: {e}")
+        st.error(f"❌ Error initializing Langfuse: {e}")
+        return None
 
 @st.cache_resource
 def initialize_rag(
@@ -34,6 +57,8 @@ def initialize_rag(
     chunk_type,
     collection_name,
     persist_dir,
+    use_reranker,
+    _langfuse_client,
 ):
     """Cache RAG instance để tránh khởi tạo lại mỗi lần refresh"""
     try:
@@ -45,6 +70,8 @@ def initialize_rag(
             use_memory=False,
             collection_name=collection_name,
             persist_dir=persist_dir,
+            use_reranker=use_reranker,
+            langfuse_client=_langfuse_client,
         )
         logger.info(f"RAG initialized with cache")
         return rag
@@ -52,7 +79,6 @@ def initialize_rag(
         logger.error(f"RAG initialization error: {e}")
         st.error(f"❌ Error initializing RAG: {e}")
         st.stop()
-
 
 # ============================== USEFUL FUNCTIONS ==============================
 
@@ -86,6 +112,8 @@ def main():
     # Initialize chat history
     if "messages" not in st.session_state:
         st.session_state.messages = []
+
+    langfuse_client = initialize_langfuse()
 
     # Side bar
     with st.sidebar:
@@ -132,6 +160,12 @@ def main():
             value=True,
             help="Combine dense and sparse vectors for better retrieval",
         )
+        
+        use_reranker = st.checkbox(
+            "Use Reranker",
+            value=True,
+            help="Use reranker to get the top K documents",
+        )
 
         chunk_type = st.selectbox(
             "Text Chunking Strategy",
@@ -140,17 +174,14 @@ def main():
             help="Choose text splitting strategy: character (simple) or recursive (smart)",
         )
 
-        collection_name = st.text_input(
-            "Collection Name",
-            value="wdm_ai_temis",
-            help="Name for the vector database collection",
-        )
-
         # Initialize RAG với cache - chỉ khi cần thiết
         persist_dir = "./qdrant_db"
 
         # Tạo key để kiểm tra xem có cần khởi tạo lại không
-        rag_config_key = f"{embedding_type}_{embedding_model}_{enable_hybrid_search}_{chunk_type}_{collection_name}"
+        rag_config_key = f"{embedding_type}_{embedding_model}_{enable_hybrid_search}_{chunk_type}_{use_reranker}"
+        
+        # Tự động tạo collection name dựa trên config để tránh xung đột
+        collection_name = f"wdm_{rag_config_key}".replace("-", "_").replace(".", "_").lower()
 
         # Chỉ khởi tạo RAG khi chưa có hoặc config thay đổi
         if (
@@ -167,6 +198,8 @@ def main():
                     chunk_type=chunk_type,
                     collection_name=collection_name,
                     persist_dir=persist_dir,
+                    use_reranker=use_reranker,
+                    _langfuse_client=langfuse_client,
                 )
 
             # Lưu vào session state
@@ -185,7 +218,7 @@ def main():
                 f"**Hybrid Search:** {'Enabled' if enable_hybrid_search else 'Disabled'}"
             )
             st.write(f"**Chunk Type:** {chunk_type}")
-
+            st.write(f"**Use Reranker:** {st.session_state.rag.reranker_name if st.session_state.rag.use_reranker else 'Disabled'}")
             if st.session_state.rag:
                 sources = st.session_state.rag.get_unique_sources()
                 if sources and sources != ["No sources available"]:
