@@ -3,7 +3,10 @@ import atexit
 import logging
 import os
 import time
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict, Any
+from datetime import datetime
+import json
+import uuid
 
 from langchain.output_parsers import PydanticOutputParser
 from langchain_core.documents import Document
@@ -33,6 +36,187 @@ def cleanup_qdrant_clients():
 atexit.register(cleanup_qdrant_clients)
 
 
+class ConversationMessage(BaseModel):
+    """Single message in a conversation"""
+    message_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    role: str = Field(..., description="user or assistant")
+    content: str = Field(..., description="Message content")
+    timestamp: datetime = Field(default_factory=datetime.now)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ConversationThread(BaseModel):
+    """Complete conversation thread"""
+    conversation_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: Optional[str] = Field(default=None)
+    session_id: Optional[str] = Field(default=None)
+    title: Optional[str] = Field(default=None)
+    messages: List[ConversationMessage] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=datetime.now)
+    last_updated: datetime = Field(default_factory=datetime.now)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    summary: Optional[str] = Field(default=None)
+
+
+class ConversationMemory:
+    """Memory management for conversations"""
+    
+    def __init__(self, max_messages_in_context: int = 10, summarize_after: int = 20):
+        self.max_messages_in_context = max_messages_in_context
+        self.summarize_after = summarize_after
+        self.conversations: Dict[str, ConversationThread] = {}
+        
+    def create_conversation(self, user_id: Optional[str] = None, session_id: Optional[str] = None) -> str:
+        """Create a new conversation thread"""
+        conversation = ConversationThread(
+            user_id=user_id,
+            session_id=session_id
+        )
+        self.conversations[conversation.conversation_id] = conversation
+        return conversation.conversation_id
+    
+    def add_message(self, conversation_id: str, role: str, content: str, metadata: Optional[Dict] = None) -> str:
+        """Add a message to conversation"""
+        if conversation_id not in self.conversations:
+            raise ValueError(f"Conversation {conversation_id} not found")
+        
+        message = ConversationMessage(
+            role=role,
+            content=content,
+            metadata=metadata or {}
+        )
+        
+        conversation = self.conversations[conversation_id]
+        conversation.messages.append(message)
+        conversation.last_updated = datetime.now()
+        
+        # Auto-generate title from first user message
+        if not conversation.title and role == "user" and len(conversation.messages) == 1:
+            conversation.title = content[:50] + "..." if len(content) > 50 else content
+        
+        # Trigger summarization if needed
+        if len(conversation.messages) > self.summarize_after:
+            self._maybe_summarize_conversation(conversation_id)
+        
+        return message.message_id
+    
+    def get_conversation_context(self, conversation_id: str, include_summary: bool = True) -> str:
+        """Get conversation context for LLM"""
+        if conversation_id not in self.conversations:
+            return ""
+        
+        conversation = self.conversations[conversation_id]
+        context_parts = []
+        
+        # Add summary if available and requested
+        if include_summary and conversation.summary:
+            context_parts.append(f"Previous conversation summary: {conversation.summary}")
+        
+        # Get recent messages (limit to max_messages_in_context)
+        recent_messages = conversation.messages[-self.max_messages_in_context:]
+        
+        if recent_messages:
+            context_parts.append("Recent conversation:")
+            for msg in recent_messages:
+                context_parts.append(f"{msg.role.capitalize()}: {msg.content}")
+        
+        return "\n".join(context_parts)
+    
+    def get_conversation(self, conversation_id: str) -> Optional[ConversationThread]:
+        """Get full conversation thread"""
+        return self.conversations.get(conversation_id)
+    
+    def list_conversations(self, user_id: Optional[str] = None, session_id: Optional[str] = None) -> List[ConversationThread]:
+        """List conversations with optional filtering"""
+        conversations = list(self.conversations.values())
+        
+        if user_id:
+            conversations = [c for c in conversations if c.user_id == user_id]
+        if session_id:
+            conversations = [c for c in conversations if c.session_id == session_id]
+        
+        # Sort by last updated, newest first
+        conversations.sort(key=lambda x: x.last_updated, reverse=True)
+        return conversations
+    
+    def clear_conversation(self, conversation_id: str):
+        """Clear a specific conversation"""
+        if conversation_id in self.conversations:
+            del self.conversations[conversation_id]
+    
+    def _maybe_summarize_conversation(self, conversation_id: str):
+        """Summarize conversation if it gets too long"""
+        conversation = self.conversations[conversation_id]
+        
+        # Only summarize if we have enough messages and no recent summary
+        if len(conversation.messages) % self.summarize_after == 0:
+            try:
+                # Simple summarization - in production, use LLM
+                messages_text = "\n".join([f"{msg.role}: {msg.content}" for msg in conversation.messages[:-self.max_messages_in_context]])
+                conversation.summary = f"Earlier conversation covered: {messages_text[:200]}..."
+                logger.info(f"Summarized conversation {conversation_id}")
+            except Exception as e:
+                logger.warning(f"Failed to summarize conversation {conversation_id}: {e}")
+
+
+class ConversationManager:
+    """High-level conversation management"""
+    
+    def __init__(self, memory: Optional[ConversationMemory] = None):
+        self.memory = memory or ConversationMemory()
+        self.current_conversation: Optional[str] = None
+        
+    def start_conversation(self, user_id: Optional[str] = None, session_id: Optional[str] = None) -> str:
+        """Start a new conversation"""
+        conversation_id = self.memory.create_conversation(user_id, session_id)
+        self.current_conversation = conversation_id
+        return conversation_id
+    
+    def use_conversation(self, conversation_id: str):
+        """Switch to an existing conversation"""
+        if conversation_id not in self.memory.conversations:
+            raise ValueError(f"Conversation {conversation_id} not found")
+        self.current_conversation = conversation_id
+    
+    def add_user_message(self, content: str, metadata: Optional[Dict] = None) -> str:
+        """Add user message to current conversation"""
+        if not self.current_conversation:
+            self.current_conversation = self.start_conversation()
+        return self.memory.add_message(self.current_conversation, "user", content, metadata)
+    
+    def add_assistant_message(self, content: str, metadata: Optional[Dict] = None) -> str:
+        """Add assistant message to current conversation"""
+        if not self.current_conversation:
+            raise ValueError("No active conversation")
+        return self.memory.add_message(self.current_conversation, "assistant", content, metadata)
+    
+    def get_current_context(self) -> str:
+        """Get context for current conversation"""
+        if not self.current_conversation:
+            return ""
+        return self.memory.get_conversation_context(self.current_conversation)
+    
+    def get_conversation_history(self, conversation_id: Optional[str] = None) -> List[Dict]:
+        """Get conversation history in simple format"""
+        conv_id = conversation_id or self.current_conversation
+        if not conv_id:
+            return []
+        
+        conversation = self.memory.get_conversation(conv_id)
+        if not conversation:
+            return []
+        
+        return [
+            {
+                "role": msg.role,
+                "content": msg.content,
+                "timestamp": msg.timestamp.isoformat(),
+                "metadata": msg.metadata
+            }
+            for msg in conversation.messages
+        ]
+
+
 class RAG:
     def __init__(
         self,
@@ -45,6 +229,7 @@ class RAG:
         persist_dir: str,
         use_reranker: bool,
         langfuse_client: Optional[Langfuse] = None,
+        enable_conversation_memory: bool = True,
     ):
         self.embedding_type = embedding_type
         self.embedding_model = embedding_model
@@ -71,6 +256,13 @@ class RAG:
             self.reranker = None
             self.reranker_name = "Disabled"
         self.langfuse = langfuse_client
+        
+        # Conversation management
+        self.enable_conversation_memory = enable_conversation_memory
+        if enable_conversation_memory:
+            self.conversation_manager = ConversationManager()
+        else:
+            self.conversation_manager = None
 
     def _format_time(self, seconds):
         """Format seconds to human readable time"""
@@ -84,6 +276,92 @@ class RAG:
             hours = seconds // 3600
             minutes = (seconds % 3600) // 60
             return f"{int(hours)}h {int(minutes)}m"
+
+    # ======================== CONVERSATION METHODS ========================
+    
+    def start_conversation(self, user_id: Optional[str] = None, session_id: Optional[str] = None) -> str:
+        """Start a new conversation"""
+        if not self.conversation_manager:
+            raise ValueError("Conversation memory is disabled")
+        return self.conversation_manager.start_conversation(user_id, session_id)
+    
+    def use_conversation(self, conversation_id: str):
+        """Switch to an existing conversation"""
+        if not self.conversation_manager:
+            raise ValueError("Conversation memory is disabled")
+        self.conversation_manager.use_conversation(conversation_id)
+    
+    def get_conversation_history(self, conversation_id: Optional[str] = None) -> List[Dict]:
+        """Get conversation history"""
+        if not self.conversation_manager:
+            return []
+        return self.conversation_manager.get_conversation_history(conversation_id)
+    
+    def list_conversations(self, user_id: Optional[str] = None, session_id: Optional[str] = None) -> List[Dict]:
+        """List all conversations"""
+        if not self.conversation_manager:
+            return []
+        
+        conversations = self.conversation_manager.memory.list_conversations(user_id, session_id)
+        return [
+            {
+                "conversation_id": conv.conversation_id,
+                "user_id": conv.user_id,
+                "session_id": conv.session_id,
+                "title": conv.title,
+                "created_at": conv.created_at.isoformat(),
+                "last_updated": conv.last_updated.isoformat(),
+                "message_count": len(conv.messages),
+                "summary": conv.summary
+            }
+            for conv in conversations
+        ]
+    
+    def clear_conversation(self, conversation_id: Optional[str] = None):
+        """Clear a conversation"""
+        if not self.conversation_manager:
+            return
+        
+        if conversation_id:
+            self.conversation_manager.memory.clear_conversation(conversation_id)
+        elif self.conversation_manager.current_conversation:
+            self.conversation_manager.memory.clear_conversation(self.conversation_manager.current_conversation)
+            self.conversation_manager.current_conversation = None
+    
+    def get_current_conversation_id(self) -> Optional[str]:
+        """Get current conversation ID"""
+        if not self.conversation_manager:
+            return None
+        return self.conversation_manager.current_conversation
+
+    def chat(self, query: str, filter: bool = True) -> dict:
+        """
+        Simple chat interface with automatic conversation management
+        This is a convenience method that automatically handles conversation history
+        """
+        return self.__call__(query, filter=filter, use_conversation=True)
+    
+    def debug_conversation_context(self) -> Dict[str, Any]:
+        """Debug method to see current conversation context"""
+        if not self.conversation_manager:
+            return {"error": "Conversation memory disabled"}
+        
+        if not self.conversation_manager.current_conversation:
+            return {"error": "No active conversation"}
+        
+        try:
+            context = self.conversation_manager.get_current_context()
+            history = self.conversation_manager.get_conversation_history()
+            
+            return {
+                "conversation_id": self.conversation_manager.current_conversation,
+                "message_count": len(history),
+                "conversation_context": context,
+                "full_history": history,
+                "context_length": len(context)
+            }
+        except Exception as e:
+            return {"error": f"Failed to get conversation context: {e}"}
 
     async def process_pdfs_bytes(
         self,
@@ -438,10 +716,33 @@ class RAG:
 
         return "".join(context_parts)
 
-    def generate_response(self, prompt: str, context: str, callbacks: Optional[list] = None) -> str:
+    def generate_response(self, prompt: str, context: str, conversation_context: str = "", callbacks: Optional[list] = None) -> str:
+        # Enhanced prompt template that includes conversation context
+        if conversation_context:
+            template = """Bạn là WDM-AI-TEMIS, trợ lý AI thông minh chuyên phân tích tài liệu và hỗ trợ người dùng.
+
+LỊCH SỬ HỘI THOẠI:
+{conversation_context}
+
+NỘI DUNG TÀI LIỆU:
+{context}
+
+CÂU HỎI HIỆN TẠI: {question}
+
+Hướng dẫn trả lời:
+- Nếu câu hỏi về thông tin cá nhân hoặc cuộc hội thoại trước: sử dụng lịch sử hội thoại
+- Nếu câu hỏi về tài liệu: sử dụng nội dung tài liệu  
+- Trả lời tự nhiên, thân thiện bằng tiếng Việt
+- Tham khảo cuộc hội thoại trước khi cần thiết
+- Chỉ nói không biết khi cả lịch sử hội thoại và tài liệu đều không có thông tin
+
+Trả lời:"""
+        else:
+            template = GENERATE_PROMPT
+        
         prompt_template = PromptTemplate(
-            template=GENERATE_PROMPT,
-            input_variables=["context", "question"],
+            template=template,
+            input_variables=["context", "question"] + (["conversation_context"] if conversation_context else []),
         )
 
         llm = ChatVertexAI(
@@ -450,8 +751,13 @@ class RAG:
         )
 
         chain = prompt_template | llm
+        
+        invoke_params = {"context": context, "question": prompt}
+        if conversation_context:
+            invoke_params["conversation_context"] = conversation_context
+            
         response = chain.invoke(
-            {"context": context, "question": prompt},
+            invoke_params,
             config={"callbacks": callbacks}
         )
         # Extract content from AIMessage if needed
@@ -463,7 +769,25 @@ class RAG:
             return str(content) if content is not None else ""
         return str(response)
 
-    def __call__(self, query: str, filter: bool = True) -> dict:
+    def __call__(self, query: str, filter: bool = True, use_conversation: bool = True) -> dict:
+        
+        # Conversation Management
+        conversation_context = ""
+        conversation_id = None
+        
+        if use_conversation and self.conversation_manager:
+            # Add user message to conversation
+            try:
+                if not self.conversation_manager.current_conversation:
+                    conversation_id = self.conversation_manager.start_conversation()
+                else:
+                    conversation_id = self.conversation_manager.current_conversation
+                
+                self.conversation_manager.add_user_message(query)
+                conversation_context = self.conversation_manager.get_current_context()
+            except Exception as e:
+                logger.warning(f"Failed to manage conversation: {e}")
+                conversation_context = ""
         
         if not self.langfuse:
             # Fallback to original behavior if Langfuse is not configured
@@ -472,8 +796,31 @@ class RAG:
             filter_types = analysis.types if filter and analysis.types else None
             docs = self.retrieve_documents(query, filter_sources, filter_types)
             context = self.prepare_context(docs)
-            response = self.generate_response(query, context)
-            return {"response": response, "context": context, "docs": docs, "query": query, "analysis": analysis}
+            response = self.generate_response(query, context, conversation_context)
+            
+            # Add assistant response to conversation
+            if use_conversation and self.conversation_manager:
+                try:
+                    self.conversation_manager.add_assistant_message(
+                        response, 
+                        metadata={
+                            "retrieved_docs_count": len(docs),
+                            "filter_sources": filter_sources,
+                            "filter_types": filter_types
+                        }
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to add assistant message: {e}")
+            
+            return {
+                "response": response, 
+                "context": context, 
+                "docs": docs, 
+                "query": query, 
+                "analysis": analysis,
+                "conversation_id": conversation_id,
+                "conversation_context": conversation_context
+            }
 
         
         with self.langfuse.start_as_current_span(
@@ -484,6 +831,8 @@ class RAG:
                 "embedding_model": self.embedding_model,
                 "hybrid_search": self.enable_hybrid_search,
                 "chunk_type": self.chunk_type,
+                "conversation_enabled": use_conversation and self.conversation_manager is not None,
+                "conversation_id": conversation_id,
             }
         ) as trace:
             # 1. Query Analysis Step
@@ -529,13 +878,33 @@ class RAG:
                 response = self.generate_response(
                     query,
                     context,
+                    conversation_context,
                     callbacks=[langfuse_handler]
                 )
 
                 generation_span.update(
-                    input={"query": query, "context_length": len(context)},
+                    input={
+                        "query": query, 
+                        "context_length": len(context),
+                        "conversation_context_length": len(conversation_context)
+                    },
                     output={"response": response}
                 )
+
+            # Add assistant response to conversation
+            if use_conversation and self.conversation_manager:
+                try:
+                    self.conversation_manager.add_assistant_message(
+                        response, 
+                        metadata={
+                            "retrieved_docs_count": len(docs),
+                            "filter_sources": filter_sources,
+                            "filter_types": filter_types,
+                            "langfuse_trace_id": trace.id if hasattr(trace, 'id') else None
+                        }
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to add assistant message: {e}")
 
             # Finalize the main trace
             trace.update(output={"final_response": response})
@@ -546,4 +915,6 @@ class RAG:
                 "docs": docs,
                 "query": query,
                 "analysis": analysis,
+                "conversation_id": conversation_id,
+                "conversation_context": conversation_context
             }

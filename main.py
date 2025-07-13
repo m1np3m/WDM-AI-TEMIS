@@ -178,8 +178,17 @@ async def main():
     except Exception as e:
         print(f"Could not get sources: {e}")
     
-    # Interactive query loop
-    print("\n🎯 Ready for queries! (type 'exit' to quit, 'stats' for collection info)")
+    # Start a conversation
+    conversation_id = my_rag.start_conversation(user_id="cli_user")
+    print(f"\n💬 Started conversation: {conversation_id}")
+    
+    # Interactive query loop with conversation support
+    print("\n🎯 Ready for queries! Available commands:")
+    print("  - 'exit' : Quit the application")
+    print("  - 'stats' : Show collection statistics")
+    print("  - 'history' : Show conversation history")
+    print("  - 'clear' : Clear current conversation") 
+    print("  - 'new' : Start a new conversation")
     print("-" * 60)
     
     while True:
@@ -202,19 +211,49 @@ async def main():
                 except Exception as e:
                     print(f"Error getting stats: {e}")
                 continue
+            elif query.lower() == "history":
+                try:
+                    history = my_rag.get_conversation_history()
+                    print(f"\n📜 Conversation History ({len(history)} messages):")
+                    print("-" * 40)
+                    for i, msg in enumerate(history, 1):
+                        role_emoji = "👤" if msg["role"] == "user" else "🤖"
+                        content_preview = msg["content"][:100] + "..." if len(msg["content"]) > 100 else msg["content"]
+                        print(f"{i}. {role_emoji} {msg['role'].title()}: {content_preview}")
+                    print("-" * 40)
+                except Exception as e:
+                    print(f"Error getting history: {e}")
+                continue
+            elif query.lower() == "clear":
+                try:
+                    my_rag.clear_conversation()
+                    print("🗑️ Conversation cleared!")
+                except Exception as e:
+                    print(f"Error clearing conversation: {e}")
+                continue
+            elif query.lower() == "new":
+                try:
+                    conversation_id = my_rag.start_conversation(user_id="cli_user")
+                    print(f"🆕 Started new conversation: {conversation_id}")
+                except Exception as e:
+                    print(f"Error starting new conversation: {e}")
+                continue
             elif not query:
                 print("❓ Please enter a valid query")
                 continue
             
-            # Process query
+            # Process query with conversation
             print("🔍 Processing query...")
-            response = my_rag(query)
+            response = my_rag.chat(query)  # Use chat method which includes conversation
             
             print("\n📝 Response:")
             print("-" * 40)
-            # Handle different response types
             print(response['response'])
             print("-" * 40)
+            
+            # Show conversation context if available
+            if response.get('conversation_context'):
+                print(f"💭 Conversation context: {len(response['conversation_context'])} chars")
             
         except KeyboardInterrupt:
             print("\n\n👋 Interrupted. Goodbye!")
