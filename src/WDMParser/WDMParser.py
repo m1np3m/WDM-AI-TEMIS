@@ -361,25 +361,23 @@ class WDMPDFParser:
                     if IGNORE_TABLES:
                         try:
                             # Attempt to locate tables and redact them.
-                        tables = page.find_tables(strategy="lines_strict").tables
-                        if tables:
-                            for tab in tables:
+                            tables = page.find_tables(strategy="lines_strict").tables
+                            if tables:
+                                for tab in tables:
                                     page.add_redact_annot(tab.bbox)
-
                                 page.apply_redactions()
 
-                            # After redaction, re-extract the text. If it is not empty, we
-                            # prefer this redacted version; otherwise, we will keep the full
-                            # version captured earlier.
-                            redacted_text = page.get_text().strip()
-                            if redacted_text:
-                                text_content = redacted_text
+                                # After redaction, re-extract the text. If it is not empty, we
+                                # prefer this redacted version; otherwise, we will keep the full
+                                # version captured earlier.
+                                redacted_text = page.get_text().strip()
+                                if redacted_text:
+                                    text_content = redacted_text
                         except Exception as e:
                             # If anything goes wrong during table redaction, fall back to the
                             # non-redacted text instead of skipping the page altogether.
                             if self.debug:
                                 logger.warning(f"Redaction failed on page {page_number}: {e}. Using full text instead.")
-                         
                     # If after all attempts we still have no content, skip adding this page.
                     if not text_content:
                         if self.debug:

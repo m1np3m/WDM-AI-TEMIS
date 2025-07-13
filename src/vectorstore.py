@@ -11,7 +11,7 @@ from qdrant_client import QdrantClient, models
 from qdrant_client.http.models import Distance, VectorParams, SparseVectorParams
 from loguru import logger
 
-from .setting import K, CHUNK_SIZE, CHUNK_OVERLAP
+from .setting import VECTORSTORE_CONFIG
 
 
 class QdrantClientManager:
@@ -43,8 +43,8 @@ class TextSplitter:
         self,
         chunk_type: str = "recursive",
         separators: List[str] = ["\n\n", "\n", ". ", "! ", "? ", ":", ";", " "],
-        chunk_size: int = CHUNK_SIZE,
-        chunk_overlap: int = CHUNK_OVERLAP,
+        chunk_size: int = VECTORSTORE_CONFIG["chunk_size"],
+        chunk_overlap: int = VECTORSTORE_CONFIG["chunk_overlap"],
         separator: str = "\n\n",
     ) -> None:
         self.chunk_type = chunk_type
@@ -286,7 +286,7 @@ class VectorStore:
                 # Load existing sources
                 self._load_existing_sources()
                 
-                self.retriever = self.vectorstore.as_retriever(search_kwargs={"k": K})
+                self.retriever = self.vectorstore.as_retriever(search_kwargs={"k": VECTORSTORE_CONFIG["k"]})
                 logger.info(f"Loaded existing vectorstore with {len(self.sources)} sources")
                 return self.vectorstore, self.retriever
                 
@@ -356,7 +356,7 @@ class VectorStore:
         if doc_splits:
             self.vectorstore.add_documents(documents=doc_splits)
         
-        self.retriever = self.vectorstore.as_retriever(search_kwargs={"k": K})
+        self.retriever = self.vectorstore.as_retriever(search_kwargs={"k": VECTORSTORE_CONFIG["k"]})
         logger.info(f"Created new Qdrant vectorstore with {len(doc_splits)} documents")
         return self.vectorstore, self.retriever
 
@@ -488,7 +488,7 @@ class VectorStore:
                 if num_docs:
                     k = num_docs
                 else:
-                    k = K
+                    k = VECTORSTORE_CONFIG["k"]
                     
                 # Use vectorstore search with filter
                 results = self.vectorstore.similarity_search(
@@ -564,7 +564,7 @@ class VectorStore:
             logger.info("Added placeholder document to vectorstore")
 
             # Update retriever
-            self.retriever = self.vectorstore.as_retriever(search_kwargs={"k": K})
+            self.retriever = self.vectorstore.as_retriever(search_kwargs={"k": VECTORSTORE_CONFIG["k"]})
 
         except Exception as e:
             logger.error(f"Error clearing vectorstore: {e}")

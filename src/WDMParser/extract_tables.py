@@ -577,29 +577,29 @@ def get_tables_from_pdf(
         # Open document from bytes for context processing
         context_doc = pymupdf.open(stream=doc, filetype="pdf")
     else:
-    # Reopen document for context processing
+        # Reopen document for context processing
         context_doc = pymupdf.open(pdf_path)
 
     try:
-    for i, table in enumerate(total_tables):
-        target_table_page_0_indexed = table["page"] - 1
-        actual_prev_page_0_indexed = target_table_page_0_indexed - 1
-        filtered_prev_page_table_bboxes = []
+        for i, table in enumerate(total_tables):
+            target_table_page_0_indexed = table["page"] - 1
+            actual_prev_page_0_indexed = target_table_page_0_indexed - 1
+            filtered_prev_page_table_bboxes = []
 
-        if actual_prev_page_0_indexed >= 0:
-            for t_prev in total_tables:
-                if t_prev["page"] - 1 == actual_prev_page_0_indexed:
-                    filtered_prev_page_table_bboxes.append(t_prev["bbox"])
+            if actual_prev_page_0_indexed >= 0:
+                for t_prev in total_tables:
+                    if t_prev["page"] - 1 == actual_prev_page_0_indexed:
+                        filtered_prev_page_table_bboxes.append(t_prev["bbox"])
 
-        context = get_context_before_table(
+            context = get_context_before_table(
                 doc=context_doc,
-            table_page_num_0_indexed=target_table_page_0_indexed,
-            table_bbox=table["bbox"],
-            prev_page_all_table_bboxes=filtered_prev_page_table_bboxes,
-        )
-        total_tables[i]["context_before"] = context
+                table_page_num_0_indexed=target_table_page_0_indexed,
+                table_bbox=table["bbox"],
+                prev_page_all_table_bboxes=filtered_prev_page_table_bboxes,
+            )
+            total_tables[i]["context_before"] = context
     finally:
-    # Close document after context processing
+        # Close document after context processing
         context_doc.close()
 
     # Process contexts for new section detection

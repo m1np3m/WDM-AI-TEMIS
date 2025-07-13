@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from .WDMParser.WDMParser import WDMPDFParser, process_pdf_documents
 from .prompts import GENERATE_PROMPT, QUERY_ANALYSIS_PROMPT
 from .reranker import Reranker
-from .setting import REANKER_MODEL_NAME, K
+from .setting import REANKER_MODEL_NAME, VECTORSTORE_CONFIG
 from .vectorstore import QdrantClientManager, VectorStore
 
 
@@ -126,7 +126,7 @@ class RAG:
                 extract_text=True,
                 return_failed=True
             )
-
+            
             # Handle tuple return type
             if isinstance(result, tuple):
                 results, failed_files = result
@@ -185,12 +185,12 @@ class RAG:
                 "table_docs": table_docs,
                 "total_time": total_time,
             }
-
+            
             logger.info(
                 f"Processing completed: {successful_files}/{len(pdf_data_list)} files, "
                 f"{total_docs} documents, {self._format_time(total_time)}"
             )
-
+            
             return all_documents, processing_results, stats
             
         except Exception as e:
@@ -252,14 +252,14 @@ class RAG:
                 query=query, filter_sources=filter_sources, filter_types=filter_types
             )
         else:
-            num_docs = K * 3
+            num_docs = VECTORSTORE_CONFIG["k"] * 3
             docs = self.vectorstore.retrieve_documents(
                 query=query, filter_sources=filter_sources, filter_types=filter_types, num_docs=num_docs
             )
             
             # Safer approach: Use index-based mapping instead of content mapping
             contents = [doc.page_content for doc in docs]
-            reranked_contents = self.reranker.rerank(query, contents, K)
+            reranked_contents = self.reranker.rerank(query, contents, VECTORSTORE_CONFIG["k"])
             
             # Map back using indices to handle duplicates properly
             reranked_docs = []
