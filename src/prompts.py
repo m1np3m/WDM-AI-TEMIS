@@ -292,12 +292,17 @@ Requirements:
 - Apply the above criteria to decide True or False for each context
 - Always return False for [EMPTY] contexts
 - Return the result as a list of boolean values in the same order as the input contexts
+- The output list must have exactly the same length as the input list
+- Return ONLY a JSON object in this exact format: {{"is_new_section_context": [true, false, ...]}}
+- Do NOT wrap the JSON in markdown code blocks or any other formatting
 
-Given contexts:
-{contexts}
+### List of Contexts Before Tables:
 
-Return result in JSON format:
-{{"is_new_section_context": [True/False for each context in order]}}"""
+{contexts_text}
+
+### Total number of contexts: {len_contexts}
+
+Return ONLY the JSON response without any additional text or formatting."""
 
 TABLE_HEADER_ANALYSIS_PROMPT = """You are an expert in analyzing table data structures. Your task is to examine tables and determine if their first row contains meaningful column headers.
 
@@ -330,9 +335,21 @@ A meaningful header row contains column names that describe the type of data tha
 - Compare the "Header Row" with the actual data shown in "Table Preview"
 - If the header row contains the same type of content as subsequent rows, it's likely data, not headers
 - Use the table preview to understand the data pattern and validate if the header makes sense
+- Headers should be descriptive labels, not data entries
+- Consider the overall structure and consistency of the table
 
-Given table data:
-{table_data}
+**Output Requirements:**
+- Analyze each table individually using both the header row and table preview
+- Return exactly one boolean per table in the same order as input
+- The output list must have exactly the same length as the input list
+- Be conservative: when in doubt, prefer False unless clearly header-like content
+- Return ONLY a JSON object in this exact format: {{"is_has_header": [true, false, ...]}}
+- Do NOT wrap the JSON in markdown code blocks or any other formatting
 
-Return result in JSON format:
-{{"is_has_header": [True/False for each table in order]}}"""
+### Tables Analysis:
+
+{tables_text}
+
+### Total number of tables: {len_rows}
+
+Return ONLY the JSON response without any additional text or formatting."""

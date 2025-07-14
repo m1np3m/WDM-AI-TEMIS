@@ -240,8 +240,8 @@ class Enrich_VertexAI:
 
         # Import prompts at the top level to avoid circular imports
         try:
-            from ..prompts import IMAGE_SUMMARY_PROMPT
-            self.summary_text = IMAGE_SUMMARY_PROMPT.strip()
+            from ..prompts import IMAGE_GENERAL_ANALYSIS_PROMPT
+            self.summary_text = IMAGE_GENERAL_ANALYSIS_PROMPT.strip()
         except ImportError:
             # Fallback if import fails
             self.summary_text = """
