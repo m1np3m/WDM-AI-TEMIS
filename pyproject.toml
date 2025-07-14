@@ -13,6 +13,7 @@ dependencies = [
     "docling>=2.15.1",
     "docling-core>=2.30.1",
     "dotenv>=0.9.9",
+    "fastapi>=0.115.13",
     "fastembed>=0.7.0",
     "fitz>=0.0.1.dev2",
     "flagembedding>=1.3.5",
@@ -46,6 +47,7 @@ dependencies = [
     "pandas>=2.2.3",
     "pdfplumber>=0.11.6",
     "pdftext>=0.6.2",
+    "psutil>=7.0.0",
     "pymupdf>=1.26.0",
     "python-levenshtein>=0.27.1",
     "qdrant-client>=1.14.3",
@@ -56,6 +58,7 @@ dependencies = [
     "together>=1.3.14",
     "tools>=1.0.2",
     "unstructured[all-docs]>=0.17.2",
+    "uvicorn>=0.34.2",
 ]
 
 [tool.uv.workspace]

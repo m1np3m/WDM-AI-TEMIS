@@ -1,7 +1,6 @@
 from loguru import logger
 import os
-import tempfile
-from typing import List
+from typing import List, Union
 
 from langchain.docstore.document import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter, CharacterTextSplitter
@@ -43,33 +42,52 @@ class TextSplitter:
 
 
 class PDFLoader:
-    def __init__(self, text_splitter=None, credential_path: str = None, debug: bool = False, temp_dir: str = None, enrich: bool = False):
+    def __init__(
+        self, 
+        text_splitter=None, 
+        credential_path: str = None, 
+        debug: bool = False, 
+        temp_dir: str = None, 
+        enrich: bool = False
+    ):
         """
-        Initialize the PDF loader with an optional text splitter and credentials for WDMPDFParser.
+        Initialize the PDF loader with WDMParser settings.
 
         Args:
             text_splitter: An instance of TextSplitter to process text documents
             credential_path: Path to Google service account credentials (optional, required for advanced features)
             debug: Enable debug mode for detailed logging
-            temp_dir: Custom temporary directory path (optional)
+            temp_dir: (Deprecated) Not used with new WDMParser
+            enrich: Whether to enrich tables using AI
         """
         self.text_splitter = text_splitter or TextSplitter()
+        
         if not credential_path:
             self.credential_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         else:
             self.credential_path = credential_path
+            
         self.debug = debug
-        self.temp_dir = temp_dir
         self.enrich = enrich
-        # Create temp directory if specified and doesn't exist
-        if self.temp_dir and not os.path.exists(self.temp_dir):
-            os.makedirs(self.temp_dir, exist_ok=True)
-            if self.debug:
-                logger.info(f"Created temporary directory: {self.temp_dir}")
+        
+        # Initialize WDMParser with settings
+        self.parser_settings = WDMPDFParser.create_settings(
+            credential_path=self.credential_path if self.credential_path else None,
+            debug=debug,
+            debug_level=1 if debug else 0,
+            max_concurrent_files=1,  # Single file processing
+            max_memory_mb=4096,
+            batch_size=1,
+            cleanup_interval=1
+        )
+        
+        # Ignore temp_dir parameter since we no longer use temporary files
+        if temp_dir and self.debug:
+            logger.info("temp_dir parameter is deprecated and ignored - WDMParser now processes files directly from bytes")
 
     def _load_from_file_object(self, pdf_file, original_filename: str = None):
         """
-        Helper method to load a PDF from a file object using WDMPDFParser.
+        Load a PDF from a file object using WDMParser with bytes support.
 
         Args:
             pdf_file: A file object from Streamlit's file_uploader
@@ -82,43 +100,33 @@ class PDFLoader:
             logger.info(f"Processing PDF file: {original_filename or 'unnamed'}")
             logger.info(f"File size: {len(pdf_file.getvalue())} bytes")
         
-        # Create a temporary file to store the uploaded PDF
-        temp_file_kwargs = {"delete": False, "suffix": ".pdf"}
-        if self.temp_dir:
-            temp_file_kwargs["dir"] = self.temp_dir
-            
-        with tempfile.NamedTemporaryFile(**temp_file_kwargs) as tmp_file:
-            tmp_file.write(pdf_file.getvalue())
-            temp_path = tmp_file.name
-            
-        if self.debug:
-            logger.info(f"Created temporary file: {temp_path}")
-
         try:
-            # Initialize WDMPDFParser
-            parser = WDMPDFParser(
-                file_path=temp_path,
-                credential_path=self.credential_path,
-                debug=self.debug  # Pass debug flag to parser
-            )
+            # Get PDF bytes data
+            pdf_bytes = pdf_file.getvalue()
+            
+            # Initialize WDMParser
+            parser = WDMPDFParser(settings=self.parser_settings)
             
             if self.debug:
                 logger.info("Extracting text documents...")
             
+            # Use synchronous methods for compatibility with existing code
             # Extract text documents
-            text_documents = parser.extract_text()
+            text_documents = parser._extract_text_sync(pdf_bytes, None)
             
             if self.debug:
                 logger.info(f"Extracted {len(text_documents)} text documents")
                 logger.info("Extracting table documents...")
             
-            # Extract table documents (only if credentials are available)
+            # Extract table documents
             table_documents = []
             try:
                 if self.credential_path:
                     if self.debug:
                         logger.info("Using advanced mode (with credentials)")
-                    table_documents = parser.extract_tables(
+                    table_documents = parser._extract_tables_sync(
+                        pdf_bytes,
+                        None,
                         merge_span_tables=True,
                         enrich=self.enrich
                     )
@@ -127,9 +135,11 @@ class PDFLoader:
                     if self.debug:
                         logger.info("Using basic mode (without credentials)")
                     # Extract tables without advanced features if no credentials
-                    table_documents = parser.extract_tables(
+                    table_documents = parser._extract_tables_sync(
+                        pdf_bytes,
+                        None,
                         merge_span_tables=False,
-                        enrich=self.enrich
+                        enrich=False
                     )
                     logger.info(f"Extracted {len(table_documents)} tables from PDF (basic mode)")
             except Exception as e:
@@ -156,20 +166,10 @@ class PDFLoader:
             if self.debug:
                 logger.exception("PDF processing error details:")
             return []
-            
-        finally:
-            # Ensure cleanup happens even if loading fails
-            try:
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)
-                    if self.debug:
-                        logger.info(f"Cleaned up temporary file: {temp_path}")
-            except OSError as e:
-                logger.warning(f"Failed to delete temporary file {temp_path}: {e}")
 
     def _load_from_path(self, path_string):
         """
-        Helper method to load a PDF from a file path using WDMPDFParser.
+        Load a PDF from a file path using WDMParser.
 
         Args:
             path_string: A string path to a PDF file
@@ -186,30 +186,28 @@ class PDFLoader:
             return []
             
         try:
-            # Initialize WDMPDFParser
-            parser = WDMPDFParser(
-                file_path=path_string,
-                credential_path=self.credential_path,
-                debug=self.debug  # Pass debug flag to parser
-            )
+            # Initialize WDMParser
+            parser = WDMPDFParser(settings=self.parser_settings)
             
             if self.debug:
                 logger.info("Extracting text documents...")
             
             # Extract text documents
-            text_documents = parser.extract_text()
+            text_documents = parser._extract_text_sync(path_string, None)
             
             if self.debug:
                 logger.info(f"Extracted {len(text_documents)} text documents")
                 logger.info("Extracting table documents...")
             
-            # Extract table documents (only if credentials are available)
+            # Extract table documents
             table_documents = []
             try:
                 if self.credential_path:
                     if self.debug:
                         logger.info("Using advanced mode (with credentials)")
-                    table_documents = parser.extract_tables(
+                    table_documents = parser._extract_tables_sync(
+                        path_string,
+                        None,
                         merge_span_tables=True,
                         enrich=self.enrich
                     )
@@ -218,7 +216,9 @@ class PDFLoader:
                     if self.debug:
                         logger.info("Using basic mode (without credentials)")
                     # Extract tables without advanced features if no credentials
-                    table_documents = parser.extract_tables(
+                    table_documents = parser._extract_tables_sync(
+                        path_string,
+                        None,
                         merge_span_tables=False,
                         enrich=False
                     )

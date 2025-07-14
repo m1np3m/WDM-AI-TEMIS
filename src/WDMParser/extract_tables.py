@@ -365,25 +365,29 @@ def convert_markdown_to_df(markdown_text: str) -> pd.DataFrame:
 
 
 def process_single_page(
-    page_info: Tuple[int, str, str], log: bool = False
+    page_info: Tuple[int, Union[bytes, str], str, str], log: bool = False
 ) -> List[Dict]:
     """
     Process a single page of the PDF document to extract tables.
 
     Args:
-        page_info: Tuple containing (page_idx, pdf_path, source)
+        page_info: Tuple containing (page_idx, pdf_path_or_bytes, source, data_type)
         log (bool): If True, enables logging.
 
     Returns:
         List of table objects found on the page
     """
-    page_idx, pdf_path, source = page_info
+    page_idx, pdf_data, source, data_type = page_info
     doc = None
     page_tables = []
     
     try:
-        # Open document in each process with better memory management
-        doc = pymupdf.open(pdf_path)
+        # Open document based on data type
+        if data_type == "bytes":
+            doc = pymupdf.open(stream=pdf_data, filetype="pdf")
+        else:
+            doc = pymupdf.open(pdf_data)
+            
         page = doc.load_page(page_idx)
         tables = page.find_tables(strategy="lines_strict").tables
 
@@ -494,31 +498,49 @@ def get_n_rows_from_markdown(markdown_text: str, n_rows: int) -> str:
 
 
 def get_tables_from_pdf(
-    doc: Union[str, pymupdf.Document],
-    pages: List[int] = None,
+    doc: Union[str, bytes, pymupdf.Document],
+    pages: Optional[List[int]] = None,
     debug: bool = False,
     debug_level: int = 1,
     enrich: bool = False,
     use_ai_analysis: bool = True,
-    credential_path: str = None,
+    credential_path: Optional[str] = None,
 ) -> List[WDMTable]:
-    # Convert Document object to file path if needed
+    # Handle different input types
     if isinstance(doc, pymupdf.Document):
         pdf_path = doc.name
         doc.close()  # Close the original document
+    elif isinstance(doc, bytes):
+        # For bytes input, we need to save temporarily or handle in memory
+        # We'll open directly from bytes
+        pdf_path = "<in-memory>"
+        # Open document from bytes to get page count
+        temp_doc = pymupdf.open(stream=doc, filetype="pdf")
+        page_count = temp_doc.page_count
+        temp_doc.close()
     else:
+        # String path
         pdf_path = doc
-        doc = pymupdf.open(pdf_path)
+        temp_doc = pymupdf.open(pdf_path)
+        page_count = temp_doc.page_count
+        temp_doc.close()
 
-    source = get_pdf_name(pdf_path)
+    source = get_pdf_name(pdf_path) if pdf_path != "<in-memory>" else "<in-memory>"
+    
     if pages is None:
-        pages = list(range(1, doc.page_count + 1))
-
-    # Close the document after getting page count
-    doc.close()
+        if isinstance(doc, bytes):
+            pages = list(range(1, page_count + 1))
+        else:
+            temp_doc = pymupdf.open(pdf_path)
+            pages = list(range(1, temp_doc.page_count + 1))
+            temp_doc.close()
 
     # Prepare page info for parallel processing
-    page_infos = [(page - 1, pdf_path, source) for page in pages]
+    if isinstance(doc, bytes):
+        # For bytes, we'll need to handle differently in process_single_page
+        page_infos = [(page - 1, doc, source, "bytes") for page in pages]
+    else:
+        page_infos = [(page - 1, pdf_path, source, "path") for page in pages]
 
     # OPTIMIZED: Dynamic process count based on workload size
     if len(page_infos) < 4:
@@ -550,30 +572,35 @@ def get_tables_from_pdf(
     # Sort tables by page number and vertical position
     total_tables.sort(key=lambda t: (t["page"], t["bbox"][1]))
 
-    # Reopen document for context processing
-    doc = pymupdf.open(pdf_path)
+    # Process contexts for all tables - need to handle bytes case
+    if isinstance(doc, bytes):
+        # Open document from bytes for context processing
+        context_doc = pymupdf.open(stream=doc, filetype="pdf")
+    else:
+        # Reopen document for context processing
+        context_doc = pymupdf.open(pdf_path)
 
-    # Process contexts for all tables
-    for i, table in enumerate(total_tables):
-        target_table_page_0_indexed = table["page"] - 1
-        actual_prev_page_0_indexed = target_table_page_0_indexed - 1
-        filtered_prev_page_table_bboxes = []
+    try:
+        for i, table in enumerate(total_tables):
+            target_table_page_0_indexed = table["page"] - 1
+            actual_prev_page_0_indexed = target_table_page_0_indexed - 1
+            filtered_prev_page_table_bboxes = []
 
-        if actual_prev_page_0_indexed >= 0:
-            for t_prev in total_tables:
-                if t_prev["page"] - 1 == actual_prev_page_0_indexed:
-                    filtered_prev_page_table_bboxes.append(t_prev["bbox"])
+            if actual_prev_page_0_indexed >= 0:
+                for t_prev in total_tables:
+                    if t_prev["page"] - 1 == actual_prev_page_0_indexed:
+                        filtered_prev_page_table_bboxes.append(t_prev["bbox"])
 
-        context = get_context_before_table(
-            doc=doc,
-            table_page_num_0_indexed=target_table_page_0_indexed,
-            table_bbox=table["bbox"],
-            prev_page_all_table_bboxes=filtered_prev_page_table_bboxes,
-        )
-        total_tables[i]["context_before"] = context
-
-    # Close document after context processing
-    doc.close()
+            context = get_context_before_table(
+                doc=context_doc,
+                table_page_num_0_indexed=target_table_page_0_indexed,
+                table_bbox=table["bbox"],
+                prev_page_all_table_bboxes=filtered_prev_page_table_bboxes,
+            )
+            total_tables[i]["context_before"] = context
+    finally:
+        # Close document after context processing
+        context_doc.close()
 
     # Process contexts for new section detection
     # Process headers (needed for both AI and non-AI analysis)
@@ -857,9 +884,11 @@ def enrich_single_table_markdown(
                 f"Enriching table {table_index + 1} from image: {table['image_path']}"
             )
 
-        # Add a small delay before processing to help with rate limiting
+        # ENHANCED: Longer delay for enrichment to help with rate limiting
         if table_index > 0:  # Don't delay the first table
-            time.sleep(1)
+            # Increased delay to prevent API rate limit issues
+            enhanced_delay = 2.5  # Increased from 1s to 2.5s
+            time.sleep(enhanced_delay)
 
         enriched_markdown = processor.full_pipeline(
             file_path=table["image_path"],
@@ -904,14 +933,23 @@ async def async_enrich_tables(
     Returns:
         List of enriched markdown strings in order
     """
-    # Control concurrent API calls to avoid rate limiting
-    semaphore = asyncio.Semaphore(3)  # Max 3 concurrent requests
+    # ENHANCED: More conservative concurrency for enrichment to avoid rate limiting
+    # When enriching, we need to be much more careful with API rate limits
+    semaphore = asyncio.Semaphore(1)  # Max 1 concurrent request to avoid 429 errors
     
     async def enrich_single_async(table: WDMTable, table_index: int) -> Tuple[int, str]:
         async with semaphore:
-            # Staggered delay to prevent API rate limiting
+            # ENHANCED: Much longer delays for enrichment to avoid rate limiting
             if table_index > 0:
-                await asyncio.sleep(0.8 * (table_index % 3))  # Staggered delays
+                # Progressive delay: longer wait times for later tables
+                base_delay = 3.0  # Base delay of 3 seconds
+                progressive_delay = min(table_index * 0.5, 10.0)  # Up to 10 seconds max
+                total_delay = base_delay + progressive_delay
+                
+                if debug:
+                    logger.info(f"Table {table_index + 1}: Waiting {total_delay:.1f}s before enrichment to avoid rate limits")
+                
+                await asyncio.sleep(total_delay)
             
             # Run the blocking enrichment function in thread pool
             loop = asyncio.get_event_loop()
@@ -926,7 +964,8 @@ async def async_enrich_tables(
             )
     
     if debug:
-        logger.info(f"Starting async enrichment of {len(total_tables)} tables with max 3 concurrent requests")
+        logger.info(f"Starting async enrichment of {len(total_tables)} tables with max 1 concurrent request")
+        logger.info("Using conservative concurrency (1 request at a time) to avoid VertexAI rate limits during enrichment")
     
     # Create all tasks
     tasks = [
@@ -1265,20 +1304,20 @@ def merge_tables(
 
 
 def full_pipeline(
-    doc: Union[List[str], List[pymupdf.Document]],
-    pages: List[int] = None,
+    doc: Union[str, bytes, List[str], List[pymupdf.Document]],
+    pages: Optional[List[int]] = None,
     debug: bool = False,
     debug_level: int = 1,
     return_full_tables: bool = False,
     evaluate: bool = False,
     enrich: bool = False,
-    credential_path: str = None,
+    credential_path: Optional[str] = None,
 ) -> Union[List[WDMMergedTable], Tuple[List[WDMTable], List[WDMMergedTable]]]:
     merged_tables = []
     all_tables = []  # Keep track of all extracted tables for return_full_tables
 
-    # Convert single string to list if needed
-    if isinstance(doc, str):
+    # Convert single inputs to list if needed
+    if isinstance(doc, (str, bytes)):
         doc = [doc]
 
     for doc_idx, d in enumerate(doc):
@@ -1292,6 +1331,9 @@ def full_pipeline(
                     continue
                 if debug:
                     logger.info(f"Processing document {doc_idx + 1}/{len(doc)}: {get_pdf_name(d)}")
+            elif isinstance(d, bytes):
+                if debug:
+                    logger.info(f"Processing document {doc_idx + 1}/{len(doc)}: <in-memory> ({len(d)} bytes)")
             else:
                 if debug:
                     logger.info(f"Processing document {doc_idx + 1}/{len(doc)}: {d.name}")
