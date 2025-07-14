@@ -5,7 +5,7 @@ from typing import List, Union
 from langchain.docstore.document import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter, CharacterTextSplitter
 
-from .setting import CHUNK_OVERLAP, CHUNK_SIZE
+from .setting import VECTORSTORE_CONFIG
 from .WDMParser import WDMPDFParser
 
 
@@ -14,8 +14,8 @@ class TextSplitter:
         self,
         chunk_type: str = "recursive",
         separators: List[str] = ["\n\n", "\n", ". ", "! ", "? ", ":", ";", " "],
-        chunk_size: int = CHUNK_SIZE,
-        chunk_overlap: int = CHUNK_OVERLAP,
+        chunk_size: int = VECTORSTORE_CONFIG["chunk_size"],
+        chunk_overlap: int = VECTORSTORE_CONFIG["chunk_overlap"],
         separator: str = "\n\n",
     ) -> None:
         self.chunk_type = chunk_type

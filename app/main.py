@@ -30,10 +30,9 @@ st.set_page_config(
 
 load_dotenv()
 
-# ============================== CACHED FUNCTIONS ==============================
+# Initialize core services and caching
 @st.cache_resource
 def initialize_langfuse():
-    """Cache Langfuse client."""
     try:
         public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
         secret_key = os.getenv("LANGFUSE_SECRET_KEY")
@@ -69,7 +68,6 @@ def initialize_rag(
     conversation_token_buffer=500,
     enable_conversation_optimization=True,
 ):
-    """Cache RAG instance để tránh khởi tạo lại mỗi lần refresh"""
     try:
         rag = RAG(
             embedding_type=embedding_type,
@@ -81,7 +79,7 @@ def initialize_rag(
             persist_dir=persist_dir,
             use_reranker=use_reranker,
             langfuse_client=_langfuse_client,
-            enable_conversation_memory=True,  # Enable conversation features
+            enable_conversation_memory=True,
             max_conversation_tokens=max_conversation_tokens,
             conversation_token_buffer=conversation_token_buffer,
             enable_conversation_optimization=enable_conversation_optimization,
@@ -93,14 +91,11 @@ def initialize_rag(
         st.error(f"❌ Error initializing RAG: {e}")
         st.stop()
 
-# ============================== USEFUL FUNCTIONS ==============================
-
+# Helper functions for UI state management
 def clear_history():
-    """Clear conversation history"""
     try:
         if "rag" in st.session_state and st.session_state.rag:
             st.session_state.rag.clear_conversation()
-        # Also clear legacy session state messages if they exist
         if "messages" in st.session_state:
             st.session_state.messages = []
         if "conversation_id" in st.session_state:
@@ -110,9 +105,7 @@ def clear_history():
         st.error(f"Error clearing history: {e}")
 
 def clear_rag_cache():
-    """Clear RAG cache và reinitialize"""
     initialize_rag.clear()
-    # Xóa RAG khỏi session state để force reinitialize
     if "rag" in st.session_state:
         del st.session_state.rag
     if "rag_config_key" in st.session_state:
@@ -121,33 +114,21 @@ def clear_rag_cache():
     st.rerun()
 
 async def process_pdfs_with_streamlit(pdf_files: List, credential_path: Optional[str] = None) -> List[Document]:
-    """
-    Process PDF files using the new WDMParser with bytes support
-    
-    Args:
-        pdf_files: List of Streamlit UploadedFile objects
-        credential_path: Path to Google Cloud credentials (can be None)
-        
-    Returns:
-        List of processed documents
-    """
     if not pdf_files:
         return []
     
-    # Create parser settings
     settings = WDMPDFParser.create_settings(
         credential_path=credential_path if credential_path else "",
         debug=True,
         debug_level=1,
-        max_concurrent_files=2,  # Conservative for web apps
-        max_memory_mb=2048,      # 2GB limit for web apps
+        max_concurrent_files=2,
+        max_memory_mb=2048,
         batch_size=3,
         cleanup_interval=2
     )
     
     parser = WDMPDFParser(settings=settings)
     
-    # Convert uploaded files to bytes
     pdf_bytes_list = []
     file_names = []
     
@@ -165,31 +146,27 @@ async def process_pdfs_with_streamlit(pdf_files: List, credential_path: Optional
         return []
     
     try:
-        # Process all PDFs asynchronously with bytes (with image extraction enabled)
         results = await parser.process_documents(
             pdf_documents=pdf_bytes_list,
             merge_span_tables=True,
-            enrich=False,  # Disable for faster web processing
+            enrich=False,
             extract_text=True,
-            extract_images=True,      # Enable image extraction in production
-            image_mode="summary",     # Use AI-powered image summaries
+            extract_images=True,
+            image_mode="summary",
             return_failed=False
         )
         
-        # Handle potential tuple return from process_documents
         if isinstance(results, tuple):
             results_dict, failed_files = results
         else:
             results_dict = results
         
-        # Combine all documents from all files
         all_documents = []
         total_tables = 0
         total_text = 0
         total_images = 0
         
         for identifier, documents in results_dict.items():
-            # Update source metadata to use original filename
             file_index = int(identifier.replace("<in-memory-", "").replace(">", ""))
             original_filename = file_names[file_index] if file_index < len(file_names) else f"file_{file_index}"
             
@@ -205,14 +182,12 @@ async def process_pdfs_with_streamlit(pdf_files: List, credential_path: Optional
             total_text += len(text_docs)
             total_images += len(image_docs)
         
-        # Show processing summary with image information
         st.success(f"✅ Successfully processed {len(pdf_files)} PDF files!")
         if total_images > 0:
             st.info(f"📊 Extracted: {total_text} text blocks, {total_tables} tables, {total_images} images ({len(all_documents)} total documents)")
         else:
             st.info(f"📊 Extracted: {total_text} text blocks, {total_tables} tables ({len(all_documents)} total documents)")
         
-        # Show memory usage
         memory_info = parser.get_memory_info()
         if 'error' not in memory_info:
             st.info(f"💾 Memory usage: {memory_info['rss_mb']:.1f}MB")
@@ -224,22 +199,18 @@ async def process_pdfs_with_streamlit(pdf_files: List, credential_path: Optional
         logger.error(f"PDF processing error: {e}")
         return []
 
-# ============================== MAIN FUNCTION ================================
-
+# Main application logic
 def main():
     st.title("🤖 WDM-AI-TEMIS - RAG Chatbot")
 
-    # Initialize conversation
     if "conversation_id" not in st.session_state:
         st.session_state.conversation_id = None
 
     langfuse_client = initialize_langfuse()
 
-    # Side bar
     with st.sidebar:
         st.header("⚙️ Settings")
 
-        # Action buttons
         col1, col2 = st.columns(2)
         with col1:
             st.button("Clear history", on_click=clear_history)
@@ -274,7 +245,6 @@ def main():
                 help="Select Google VertexAI embedding model",
             )
 
-        # Vector store settings
         enable_hybrid_search = st.checkbox(
             "Enable Hybrid Search",
             value=True,
@@ -294,20 +264,15 @@ def main():
             help="Choose text splitting strategy: character (simple) or recursive (smart)",
         )
 
-        # Initialize RAG với cache - chỉ khi cần thiết
         persist_dir = "./qdrant_db"
 
-        # Get conversation optimization config from session state
         conversation_config = st.session_state.get("conversation_optimization_config", 
                                                   get_conversation_optimization_config("default"))
         
-        # Tạo key để kiểm tra xem có cần khởi tạo lại không (bao gồm conversation settings)
         rag_config_key = f"{embedding_type}_{embedding_model}_{enable_hybrid_search}_{chunk_type}_{use_reranker}_{conversation_config.get('max_conversation_tokens', 4000)}_{conversation_config.get('conversation_token_buffer', 500)}_{conversation_config.get('enable_optimization', True)}"
         
-        # Tự động tạo collection name dựa trên config để tránh xung đột
         collection_name = f"wdm_{rag_config_key}".replace("-", "_").replace(".", "_").lower()
 
-        # Chỉ khởi tạo RAG khi chưa có hoặc config thay đổi
         if (
             "rag" not in st.session_state
             or st.session_state.rag is None
@@ -329,12 +294,10 @@ def main():
                     enable_conversation_optimization=conversation_config.get("enable_optimization", True),
                 )
 
-            # Lưu vào session state
             st.session_state.rag = rag
             st.session_state.rag_config_key = rag_config_key
             logger.info(f"RAG initialized with config key: {rag_config_key}")
             
-            # Start conversation if not exists
             if not st.session_state.conversation_id:
                 try:
                     st.session_state.conversation_id = rag.start_conversation(
@@ -345,10 +308,8 @@ def main():
                 except Exception as e:
                     logger.warning(f"Failed to start conversation: {e}")
         else:
-            # RAG đã có sẵn, không cần khởi tạo lại
             logger.debug("Using existing RAG from session state")
             
-            # Ensure conversation is started
             if not st.session_state.conversation_id and st.session_state.rag:
                 try:
                     st.session_state.conversation_id = st.session_state.rag.start_conversation(
@@ -359,7 +320,6 @@ def main():
                 except Exception as e:
                     logger.warning(f"Failed to start conversation: {e}")
 
-        # Display current configuration
         with st.expander("📊 Current Vector Database Config", expanded=False):
             st.write(f"**Collection:** {collection_name}")
             st.write(f"**Embedding:** {embedding_type} - {embedding_model}")
@@ -375,7 +335,6 @@ def main():
                 else:
                     st.write("**Sources:** No documents loaded")
         
-        # Conversation Management
         st.markdown("---")
         st.subheader("💬 Conversation Management")
         
@@ -390,7 +349,6 @@ def main():
                     st.write(f"💬 {current_conv['message_count']} messages")
                     st.write(f"🕒 Last: {current_conv['last_updated'][:19]}")
                 
-                # Show conversation stats
                 history = st.session_state.rag.get_conversation_history()
                 if history:
                     st.write(f"**Total Messages:** {len(history)}")
@@ -400,7 +358,6 @@ def main():
             except Exception as e:
                 st.write("Error loading conversation info")
             
-            # Conversation actions
             col1, col2 = st.columns(2)
             with col1:
                 if st.button("🆕 New Chat", help="Start a new conversation"):
@@ -428,11 +385,9 @@ def main():
         else:
             st.info("No active conversation")
 
-        # Conversation Optimization Settings
         st.markdown("---")
         st.subheader("⚡ Conversation Optimization")
         
-        # Optimization preset selection
         optimization_preset = st.selectbox(
             "Optimization Preset",
             options=list(CONVERSATION_OPTIMIZATION_PRESETS.keys()),
@@ -440,17 +395,14 @@ def main():
             help="Choose optimization preset for conversation history management"
         )
         
-        # Get selected preset config
         preset_config = get_conversation_optimization_config(optimization_preset)
         
-        # Enable/disable optimization
         enable_optimization = st.checkbox(
             "Enable Conversation Optimization",
             value=preset_config.get("enable_optimization", True),
             help="Enable conversation history optimization to manage context window"
         )
         
-        # Token management settings
         with st.expander("🔧 Token Management", expanded=False):
             max_tokens = st.number_input(
                 "Max Conversation Tokens",
@@ -479,7 +431,6 @@ def main():
                 help="Maximum number of recent messages to keep"
             )
         
-        # Summarization settings
         with st.expander("📝 Summarization", expanded=False):
             summarize_after = st.number_input(
                 "Summarize After (messages)",
@@ -499,7 +450,6 @@ def main():
                 help="Ratio of tokens allocated to summary vs recent messages"
             )
         
-        # Store optimization config in session state
         st.session_state.conversation_optimization_config = {
             "enable_optimization": enable_optimization,
             "max_conversation_tokens": max_tokens,
@@ -514,7 +464,6 @@ def main():
             ]}
         }
 
-        # Vector Database Actions
         if st.button("🗑️ Clear Database"):
             if st.session_state.rag:
                 with st.spinner("Clearing database..."):
@@ -530,14 +479,12 @@ def main():
         st.markdown("---")
         st.subheader("📄 Upload PDF")
 
-        # Add debug mode option
         debug_mode = st.checkbox(
             "Enable Debug Mode",
             value=False,
             help="Show detailed logging information during PDF processing",
         )
 
-        # Add credential path input - simplified
         if "GOOGLE_APPLICATION_CREDENTIALS" in os.environ:
             credential_path = os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
             st.info(f"✅ Using credentials from environment")
@@ -560,21 +507,17 @@ def main():
                     st.error("❌ Vector database not initialized. Please check settings above.")
                     st.stop()
 
-                # Validate credential path if provided
                 if cred_path and not os.path.exists(cred_path):
                     st.error(f"❌ Credentials file not found: {cred_path}")
                     st.stop()
 
-                # Process PDFs using new WDMParser with bytes
                 with st.spinner(f"🔄 Processing {len(pdf_files)} PDF files with enhanced parser..."):
                     try:
-                        # Run async processing
                         all_documents = asyncio.run(
                             process_pdfs_with_streamlit(pdf_files, cred_path)
                         )
 
                         if all_documents:
-                            # Add documents to vectorstore
                             try:
                                 with st.spinner("📥 Adding documents to vector database..."):
                                     st.session_state.rag.add_documents(documents=all_documents)
@@ -594,16 +537,13 @@ def main():
                         st.error(f"❌ Error processing PDFs: {e}")
                         logger.error(f"PDF processing error: {e}")
 
-    # Main chat interface with 2-column layout
     st.markdown("---")
 
-    # Create two columns: chat (left) and context (right)
-    chat_col, context_col = st.columns([2, 1])  # 2:1 ratio
+    chat_col, context_col = st.columns([2, 1])
 
     with chat_col:
         st.subheader("🗨️ Conversation")
 
-        # Display conversation history from RAG
         if st.session_state.rag and st.session_state.conversation_id:
             try:
                 conversation_history = st.session_state.rag.get_conversation_history()
@@ -619,7 +559,6 @@ def main():
     with context_col:
         st.subheader("📋 Retrieved Context")
 
-        # Always show initial state when not processing
         has_conversation = False
         if st.session_state.rag and st.session_state.conversation_id:
             try:
@@ -633,7 +572,6 @@ def main():
         else:
             st.info("💡 Context will appear here when asking questions!")
 
-        # Show current database status
         if st.session_state.rag:
             sources = st.session_state.rag.get_unique_sources()
             if sources and sources != ["No sources available"]:
@@ -645,9 +583,7 @@ def main():
             else:
                 st.write("📭 No documents in database yet")
 
-    # Chat input at the bottom (outside columns)
     if prompt := st.chat_input("Ask me anything about your documents!"):
-        # Display user message immediately
         with chat_col:
             with st.chat_message("user"):
                 st.markdown(prompt)
@@ -655,13 +591,10 @@ def main():
             with st.spinner("Searching knowledge base..."):
                 try:
                     if st.session_state.rag and st.session_state.conversation_id:
-                        # Ensure we're using the correct conversation
                         st.session_state.rag.use_conversation(st.session_state.conversation_id)
                         
-                        # Use chat method for conversation-aware response
                         rag_result = st.session_state.rag.chat(prompt)
 
-                        # Extract thông tin từ dictionary result
                         docs = rag_result["docs"]
                         context = rag_result["context"]
                         response = rag_result["response"]
@@ -670,13 +603,11 @@ def main():
 
                         print(analysis)
 
-                        # Extract text content if response is a message object
                         if hasattr(response, "content"):
                             response = response.content
                         elif not isinstance(response, str):
                             response = str(response)
 
-                        # Show context in right panel during processing
                         with context_col:
                             st.markdown("### 🔍 Retrieved for Current Query:")
 
@@ -690,10 +621,8 @@ def main():
                                         page = doc.metadata.get("page", "Unknown page")
                                         doc_type = doc.metadata.get("type", "text")
 
-                                        # Show source info with page
                                         st.write(f"**{i}. {source}** (Page {page})")
 
-                                        # Type badge
                                         if doc_type == "table":
                                             st.markdown("🔢 `TABLE`")
                                         elif doc_type == "image":
@@ -701,7 +630,6 @@ def main():
                                         else:
                                             st.markdown("📝 `TEXT`")
 
-                                        # Content preview
                                         preview = (
                                             doc.page_content[:300] + "..."
                                             if len(doc.page_content) > 300
@@ -712,7 +640,6 @@ def main():
                                         if i < len(docs):
                                             st.markdown("---")
 
-                                # Show context used for generation (optional debug info)
                                 conversation_length = 0
                                 try:
                                     if st.session_state.rag and st.session_state.conversation_id:
@@ -731,7 +658,6 @@ def main():
                                             else context
                                         )
                                         
-                                        # Show conversation context if available
                                         if rag_result.get('conversation_context'):
                                             st.markdown("**Conversation Context:**")
                                             st.text(
@@ -747,7 +673,6 @@ def main():
                             st.info("📤 Upload PDF documents to start searching!")
                         response = "Please upload PDF documents first to start using the knowledge base."
                         
-                        # Manually add to conversation if RAG exists but no conversation_id
                         if st.session_state.rag and st.session_state.rag.conversation_manager:
                             try:
                                 if not st.session_state.conversation_id:
@@ -767,7 +692,6 @@ def main():
                         st.error(f"Search error: {str(e)}")
                     response = f"Error processing query: {str(e)}"
 
-        # Display assistant response (conversation already managed by RAG)
         with chat_col:
             with st.chat_message("assistant"):
                 st.markdown(response)
