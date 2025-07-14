@@ -13,8 +13,27 @@ from langchain_core.documents import Document
 from loguru import logger
 from markdown import markdown
 
+# Try to load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # dotenv not available, skip loading .env file
+    pass
+
 from .extract_tables import WDMMergedTable, WDMTable, full_pipeline, get_tables_from_pdf
-from ..setting import IGNORE_TABLES, ENRICH_TABLES
+from .enrich import Enrich_VertexAI
+
+# Handle imports for both relative and absolute usage
+try:
+    from ..setting import IGNORE_TABLES, ENRICH_TABLES
+except ImportError:
+    try:
+        from src.setting import IGNORE_TABLES, ENRICH_TABLES
+    except ImportError:
+        # Fallback defaults if settings not available
+        IGNORE_TABLES = True
+        ENRICH_TABLES = False
 
 def convert_markdown_to_df(markdown_text: str) -> pd.DataFrame:
     try:
@@ -70,6 +89,41 @@ class WDMImage(TypedDict):
     source: str
     bbox: Tuple[float, float, float, float]
     image_path: str
+    summary: Optional[str]  # Added summary field
+
+
+def convert_image2text(wdm_image: WDMImage, mode: str = "summary") -> str:
+    """
+    Convert WDMImage to text representation based on mode.
+    
+    Args:
+        wdm_image: WDMImage object containing image data
+        mode: Mode for conversion ('summary' or 'metadata')
+        
+    Returns:
+        Text representation of the image
+    """
+    page = wdm_image['page']
+    source = wdm_image['source']
+    bbox = wdm_image['bbox']
+    image_path = wdm_image.get('image_path', '')
+    
+    if mode == "summary":
+        # Use AI to generate summary of the image
+        summary = wdm_image.get('summary', 'No summary available')
+        image_text = f"Image from page {page} of {source}\n"
+        image_text += f"Location: {bbox}\n"
+        image_text += f"Summary: {summary}\n"
+        if image_path:
+            image_text += f"Image path: {image_path}\n"
+        return image_text.strip()
+    else:
+        # Default metadata mode
+        image_text = f"Image from page {page} of {source}\n"
+        image_text += f"Location: {bbox}\n"
+        if image_path:
+            image_text += f"Image path: {image_path}\n"
+        return image_text.strip()
 
 
 class WDMParserSettings(TypedDict, total=False):
@@ -133,6 +187,23 @@ class WDMPDFParser:
         # Create semaphore for concurrent file processing
         self._semaphore = asyncio.Semaphore(self.max_concurrent_files)
         
+        # Initialize AI processor for image analysis
+        self.ai_processor = None
+        
+        # Check for credentials in order: explicit parameter -> environment variable
+        credentials_to_use = self.credential_path or os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+        
+        if credentials_to_use:
+            try:
+                self.ai_processor = Enrich_VertexAI(credentials_path=credentials_to_use)
+                if self.debug:
+                    logger.info(f"AI processor initialized with credentials from: {'parameter' if self.credential_path else 'environment variable'}")
+            except Exception as e:
+                if self.debug:
+                    logger.warning(f"Failed to initialize AI processor: {e}")
+        elif self.debug:
+            logger.info("No credentials found for AI processor (checked parameter and GOOGLE_APPLICATION_CREDENTIALS env var)")
+        
         if self.debug:
             logger.info(f"WDMParser initialized with max_concurrent_files={self.max_concurrent_files}, "
                        f"max_memory_mb={self.max_memory_mb}, batch_size={self.batch_size}")
@@ -178,6 +249,8 @@ class WDMPDFParser:
         merge_span_tables: bool = True,
         enrich: bool = ENRICH_TABLES,
         extract_text: bool = True,
+        extract_images: bool = False,
+        image_mode: str = "summary",
     ) -> List[Document]:
         """
         Process a single PDF from file path or bytes.
@@ -188,6 +261,8 @@ class WDMPDFParser:
             merge_span_tables: Whether to merge spanning tables
             enrich: Whether to enrich tables
             extract_text: Whether to extract text content
+            extract_images: Whether to extract images
+            image_mode: Mode for image processing ('summary' or 'metadata')
             
         Returns:
             List of Document objects containing extracted content
@@ -201,7 +276,7 @@ class WDMPDFParser:
                         logger.info(f"Processing PDF from bytes ({len(pdf_data)} bytes)")
                 else:
                     source_name = pdf_data
-                if self.debug:
+                    if self.debug:
                         logger.info(f"Processing PDF from file: {os.path.basename(pdf_data)}")
                 
                 # Check memory before processing
@@ -229,16 +304,25 @@ class WDMPDFParser:
                     
                     text_task = loop.run_in_executor(None, extract_text_task)
                 
+                # Extract images if requested
+                image_task = None
+                if extract_images:
+                    def extract_images_task():
+                        return self._extract_images_sync(pdf_data, pages, image_mode)
+                    
+                    image_task = loop.run_in_executor(None, extract_images_task)
+                
                 # Wait for completion
                 table_docs = await tables_task
                 text_docs = await text_task if text_task else []
+                image_docs = await image_task if image_task else []
                 
                 # Combine results
-                all_docs = table_docs + text_docs
+                all_docs = table_docs + text_docs + image_docs
                 
                 if self.debug:
                     logger.info(f"Completed processing {source_name}: "
-                               f"{len(table_docs)} tables, {len(text_docs)} text blocks")
+                               f"{len(table_docs)} tables, {len(text_docs)} text blocks, {len(image_docs)} images")
                 
                 return all_docs
                 
@@ -247,6 +331,154 @@ class WDMPDFParser:
                 if self.debug:
                     logger.error(f"Error processing {source_name}: {str(e)}")
                 return []
+
+    def _extract_images_sync(
+        self,
+        pdf_data: Union[str, bytes],
+        pages: Optional[List[int]],
+        mode: str = "summary",
+    ) -> List[Document]:
+        """
+        Synchronous image extraction supporting both file paths and bytes
+        
+        Args:
+            pdf_data: File path (str) or PDF content (bytes)
+            pages: List of page numbers to process
+            mode: Mode for image processing ('summary' or 'metadata')
+            
+        Returns:
+            List of Document objects containing extracted images
+        """
+        # Open document based on data type
+        if isinstance(pdf_data, bytes):
+            doc = pymupdf.open(stream=pdf_data, filetype="pdf")
+            source_name = "<in-memory>"
+        else:
+            doc = pymupdf.open(pdf_data)
+            source_name = pdf_data
+            
+        if pages is None:
+            pages = list(range(1, len(doc) + 1))
+        
+        all_images: List[WDMImage] = []
+        
+        # Create output directory for images
+        output_dir = "extracted_images"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        try:
+            for page_number in pages:
+                try:
+                    # Convert 1-indexed page number to 0-indexed for PyMuPDF
+                    page = doc[page_number - 1]
+                    
+                    # Get all images on the page
+                    image_list = page.get_images()
+                    
+                    if self.debug:
+                        logger.info(f"Found {len(image_list)} images on page {page_number}")
+                    
+                    for img_index, img in enumerate(image_list):
+                        try:
+                            # Get image data
+                            xref = img[0]
+                            pix = pymupdf.Pixmap(doc, xref)
+                            
+                            # Skip if image is too small (likely icon or decoration)
+                            if pix.width < 50 or pix.height < 50:
+                                pix = None
+                                continue
+                            
+                            # Convert to PNG if not already
+                            if pix.n - pix.alpha < 4:  # GRAY or RGB
+                                img_data = pix.pil_tobytes(format="PNG")
+                            else:  # CMYK: convert to RGB first
+                                pix_rgb = pymupdf.Pixmap(pymupdf.csRGB, pix)
+                                img_data = pix_rgb.pil_tobytes(format="PNG")
+                                pix_rgb = None
+                            
+                            # Generate filename
+                            if isinstance(pdf_data, bytes):
+                                filename = f"image_page{page_number}_{img_index}.png"
+                            else:
+                                base_name = os.path.splitext(os.path.basename(pdf_data))[0]
+                                filename = f"{base_name}_page{page_number}_{img_index}.png"
+                            
+                            image_path = os.path.join(output_dir, filename)
+                            
+                            # Save image to file
+                            with open(image_path, "wb") as f:
+                                f.write(img_data)
+                            
+                            # Convert to base64 for storage
+                            base64_image = base64.b64encode(img_data).decode('utf-8')
+                            
+                            # Get image bbox (approximate)
+                            bbox = (0, 0, pix.width, pix.height)
+                            
+                            # Generate summary if mode is summary and AI processor is available
+                            summary = None
+                            if mode == "summary" and self.ai_processor:
+                                try:
+                                    summary = self.ai_processor.prompt_for_summary(base64_image)
+                                    if self.debug:
+                                        logger.info(f"Generated summary for image {filename}: {summary[:100]}...")
+                                except Exception as e:
+                                    if self.debug:
+                                        logger.warning(f"Failed to generate summary for image {filename}: {e}")
+                                    summary = "Summary generation failed"
+                            
+                            # Create WDMImage object
+                            wdm_image: WDMImage = {
+                                "base64_image": base64_image,
+                                "page": page_number,
+                                "source": source_name,
+                                "bbox": bbox,
+                                "image_path": image_path,
+                                "summary": summary,
+                            }
+                            
+                            all_images.append(wdm_image)
+                            
+                            if self.debug:
+                                logger.info(f"Extracted image {filename} from page {page_number}")
+                            
+                            # Clean up pixmap
+                            pix = None
+                            
+                        except Exception as e:
+                            if self.debug:
+                                logger.warning(f"Failed to extract image {img_index} from page {page_number}: {e}")
+                            continue
+                            
+                except Exception as e:
+                    if self.debug:
+                        logger.warning(f"Failed to process page {page_number}: {e}")
+                    continue
+                    
+        finally:
+            doc.close()
+            
+        # Convert to Document objects
+        documents: List[Document] = [
+            Document(
+                page_content=convert_image2text(image, mode),
+                metadata={
+                    "page": str(image["page"]),
+                    "source": image["source"],
+                    "type": "image",
+                    "image_path": image["image_path"],
+                    "bbox": str(image["bbox"]),
+                    "mode": mode,
+                },
+            )
+            for image in all_images
+        ]
+        
+        if self.debug:
+            logger.info(f"Successfully extracted {len(documents)} images with mode='{mode}'")
+            
+        return documents
 
     def _extract_tables_sync(
         self,
@@ -432,6 +664,8 @@ class WDMPDFParser:
         merge_span_tables: bool = True,
         enrich: bool = ENRICH_TABLES,
         extract_text: bool = True,
+        extract_images: bool = False,
+        image_mode: str = "summary",
         return_failed: bool = False,
     ) -> Union[Dict[str, List[Document]], Tuple[Dict[str, List[Document]], List[str]]]:
         """
@@ -443,6 +677,8 @@ class WDMPDFParser:
             merge_span_tables: Whether to merge spanning tables
             enrich: Whether to enrich tables
             extract_text: Whether to extract text content
+            extract_images: Whether to extract images
+            image_mode: Mode for image processing ('summary' or 'metadata')
             return_failed: Whether to return list of failed files
             
         Returns:
@@ -456,6 +692,7 @@ class WDMPDFParser:
             logger.info(f"Starting async processing of {len(pdf_documents)} documents")
             logger.info(f"Memory management: max_concurrent={self.max_concurrent_files}, "
                        f"batch_size={self.batch_size}, max_memory={self.max_memory_mb}MB")
+            logger.info(f"Features: extract_text={extract_text}, extract_images={extract_images} (mode={image_mode})")
         
         results = {}
         failed_files = []
@@ -480,7 +717,7 @@ class WDMPDFParser:
                     identifier = pdf_data
                 
                 task = self._process_single_pdf_with_id(
-                    identifier, pdf_data, pages, merge_span_tables, enrich, extract_text
+                    identifier, pdf_data, pages, merge_span_tables, enrich, extract_text, extract_images, image_mode
                 )
                 tasks.append(task)
             
@@ -538,6 +775,8 @@ class WDMPDFParser:
         merge_span_tables: bool,
         enrich: bool,
         extract_text: bool,
+        extract_images: bool,
+        image_mode: str,
     ) -> Tuple[str, List[Document]]:
         """Helper method to process a single PDF and return with identifier"""
         try:
@@ -547,6 +786,8 @@ class WDMPDFParser:
                 merge_span_tables=merge_span_tables,
                 enrich=enrich,
                 extract_text=extract_text,
+                extract_images=extract_images,
+                image_mode=image_mode,
             )
             return identifier, documents
         except Exception as e:
@@ -597,6 +838,29 @@ class WDMPDFParser:
             )
             
         return self._extract_text_sync(self.file_path, pages)
+
+    def extract_images(
+        self,
+        pages: Optional[List[int]] = None,
+        mode: str = "summary",
+    ) -> List[Document]:
+        """
+        Extract images from PDF pages (backward compatibility method).
+        
+        Args:
+            pages: List of page numbers to extract (1-indexed). If None, extracts all pages.
+            mode: Mode for image processing ('summary' or 'metadata')
+
+        Returns:
+            List of Document objects containing the extracted images.
+        """
+        if self.file_path is None:
+            raise ValueError(
+                "No file_path specified. Either use the old constructor with file_path "
+                "or use the new async methods with explicit file paths."
+            )
+            
+        return self._extract_images_sync(self.file_path, pages, mode)
 
     # Utility methods for the new async interface
     @classmethod

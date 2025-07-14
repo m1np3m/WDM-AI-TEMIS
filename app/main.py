@@ -165,12 +165,14 @@ async def process_pdfs_with_streamlit(pdf_files: List, credential_path: Optional
         return []
     
     try:
-        # Process all PDFs asynchronously with bytes
+        # Process all PDFs asynchronously with bytes (with image extraction enabled)
         results = await parser.process_documents(
             pdf_documents=pdf_bytes_list,
             merge_span_tables=True,
             enrich=False,  # Disable for faster web processing
             extract_text=True,
+            extract_images=True,      # Enable image extraction in production
+            image_mode="summary",     # Use AI-powered image summaries
             return_failed=False
         )
         
@@ -184,6 +186,7 @@ async def process_pdfs_with_streamlit(pdf_files: List, credential_path: Optional
         all_documents = []
         total_tables = 0
         total_text = 0
+        total_images = 0
         
         for identifier, documents in results_dict.items():
             # Update source metadata to use original filename
@@ -196,13 +199,18 @@ async def process_pdfs_with_streamlit(pdf_files: List, credential_path: Optional
             
             table_docs = [d for d in documents if d.metadata.get('type') == 'table']
             text_docs = [d for d in documents if d.metadata.get('type') == 'text']
+            image_docs = [d for d in documents if d.metadata.get('type') == 'image']
             
             total_tables += len(table_docs)
             total_text += len(text_docs)
+            total_images += len(image_docs)
         
-        # Show processing summary
+        # Show processing summary with image information
         st.success(f"✅ Successfully processed {len(pdf_files)} PDF files!")
-        st.info(f"📊 Extracted: {total_tables} tables, {total_text} text blocks ({len(all_documents)} total documents)")
+        if total_images > 0:
+            st.info(f"📊 Extracted: {total_text} text blocks, {total_tables} tables, {total_images} images ({len(all_documents)} total documents)")
+        else:
+            st.info(f"📊 Extracted: {total_text} text blocks, {total_tables} tables ({len(all_documents)} total documents)")
         
         # Show memory usage
         memory_info = parser.get_memory_info()
@@ -688,6 +696,8 @@ def main():
                                         # Type badge
                                         if doc_type == "table":
                                             st.markdown("🔢 `TABLE`")
+                                        elif doc_type == "image":
+                                            st.markdown("🖼️ `IMAGE`")
                                         else:
                                             st.markdown("📝 `TEXT`")
 

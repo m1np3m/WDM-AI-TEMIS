@@ -372,15 +372,16 @@ class VectorStore:
         try:
             client = self._get_client()
             
-            # Separate text and table documents for different handling
+            # Separate documents by type for different handling
             text_documents = [doc for doc in documents if doc.metadata.get("type") == "text"]
             table_documents = [doc for doc in documents if doc.metadata.get("type") == "table"]
+            image_documents = [doc for doc in documents if doc.metadata.get("type") == "image"]
             
             # Apply text splitter only to text documents  
             split_text_documents = self.text_splitter(text_documents) if text_documents else []
             
-            # Combine split text documents with whole table documents
-            processed_docs = split_text_documents + table_documents
+            # Combine all document types (images don't need splitting)
+            processed_docs = split_text_documents + table_documents + image_documents
             
             new_docs = []
             new_ids = []
@@ -406,7 +407,7 @@ class VectorStore:
                 self.vectorstore.add_documents(documents=new_docs, ids=new_ids)
                 self._update_sources(new_docs)
                 logger.info(f"Successfully added {len(new_docs)} new documents to vectorstore "
-                           f"({len(split_text_documents)} text chunks, {len(table_documents)} tables)")
+                           f"({len(split_text_documents)} text chunks, {len(table_documents)} tables, {len(image_documents)} images)")
             else:
                 logger.info("No new documents to add; all were duplicates")
                 

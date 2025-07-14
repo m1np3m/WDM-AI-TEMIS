@@ -766,6 +766,8 @@ class RAG:
         pdf_data_list: Union[List[str], List[bytes], List[Union[str, bytes]]],
         credential_path: Optional[str] = None,
         debug_mode: bool = False,
+        extract_images: bool = False,
+        image_mode: str = "summary",
     ) -> tuple:
         """
         Process multiple PDF files/bytes using the new WDMParser with async support
@@ -774,6 +776,8 @@ class RAG:
             pdf_data_list: List of PDF file paths or bytes data
             credential_path: Path to Google Cloud credentials
             debug_mode: Enable debug logging
+            extract_images: Whether to extract images from PDFs
+            image_mode: Mode for image processing ('summary' or 'metadata')
             
         Returns:
             Tuple of (all_documents, processing_results, stats)
@@ -800,6 +804,8 @@ class RAG:
                 merge_span_tables=True,
                 enrich=False,
                 extract_text=True,
+                extract_images=extract_images,
+                image_mode=image_mode,
                 return_failed=True
             )
             
@@ -818,6 +824,7 @@ class RAG:
                 # Create result object similar to old format
                 table_docs = [d for d in documents if d.metadata.get('type') == 'table']
                 text_docs = [d for d in documents if d.metadata.get('type') == 'text']
+                image_docs = [d for d in documents if d.metadata.get('type') == 'image']
                 
                 processing_results.append({
                     "file_name": identifier,
@@ -826,6 +833,7 @@ class RAG:
                     "count": len(documents),
                     "table_docs": len(table_docs),
                     "text_docs": len(text_docs),
+                    "image_docs": len(image_docs),
                     "processing_time": 0,  # Not tracked per file in new system
                     "file_size_mb": 0,     # Not tracked per file in new system
                 })
@@ -842,6 +850,7 @@ class RAG:
                     "count": 0,
                     "table_docs": 0,
                     "text_docs": 0,
+                    "image_docs": 0,
                     "processing_time": 0,
                     "file_size_mb": 0,
                 })
@@ -852,6 +861,7 @@ class RAG:
             total_docs = len(all_documents)
             text_docs = len([doc for doc in all_documents if doc.metadata.get("type") == "text"])
             table_docs = len([doc for doc in all_documents if doc.metadata.get("type") == "table"])
+            image_docs = len([doc for doc in all_documents if doc.metadata.get("type") == "image"])
             
             stats = {
                 "successful_files": successful_files,
@@ -859,12 +869,16 @@ class RAG:
                 "total_docs": total_docs,
                 "text_docs": text_docs,
                 "table_docs": table_docs,
+                "image_docs": image_docs,
                 "total_time": total_time,
+                "extract_images": extract_images,
+                "image_mode": image_mode,
             }
             
             logger.info(
                 f"Processing completed: {successful_files}/{len(pdf_data_list)} files, "
-                f"{total_docs} documents, {self._format_time(total_time)}"
+                f"{total_docs} documents ({text_docs} text, {table_docs} tables, {image_docs} images), "
+                f"{self._format_time(total_time)}"
             )
             
             return all_documents, processing_results, stats
@@ -877,7 +891,10 @@ class RAG:
                 "total_docs": 0,
                 "text_docs": 0,
                 "table_docs": 0,
+                "image_docs": 0,
                 "total_time": time.time() - start_time,
+                "extract_images": extract_images,
+                "image_mode": image_mode,
             }
 
     # Keep the old method for backward compatibility
@@ -887,12 +904,16 @@ class RAG:
         credential_path: Optional[str] = None,
         temp_dir: Optional[str] = None,
         debug_mode: bool = False,
+        extract_images: bool = False,
+        image_mode: str = "summary",
     ):
         """
         Process multiple PDF files asynchronously (backward compatibility method)
         Now uses the new WDMParser internally
         """
-        return await self.process_pdfs_bytes(pdf_files, credential_path, debug_mode)
+        return await self.process_pdfs_bytes(
+            pdf_files, credential_path, debug_mode, extract_images, image_mode
+        )
 
     def add_documents(
         self,
@@ -968,7 +989,7 @@ class RAG:
         self,
         query: str,
         available_sources: Optional[List[str]] = None,
-        available_types: Optional[List[str]] = ["text", "table"],
+        available_types: Optional[List[str]] = ["text", "table", "image"],
         callbacks: Optional[list] = None
     ):
         """
@@ -1025,7 +1046,27 @@ class RAG:
             if available_types:
                 context_info += f"\nAvailable types: {', '.join(available_types)}"
 
-            template = QUERY_ANALYSIS_PROMPT
+            # Enhanced prompt to include image type
+            template = """Bạn là một AI chuyên phân tích câu hỏi để xác định nguồn tài liệu và loại nội dung phù hợp.
+
+Câu hỏi: {query}
+
+Thông tin có sẵn: {context_info}
+
+Hãy phân tích câu hỏi và xác định:
+1. SOURCES: Nguồn tài liệu nào cần tìm kiếm (tên file, tài liệu cụ thể)
+2. TYPES: Loại nội dung nào phù hợp:
+   - "text": Văn bản thường
+   - "table": Bảng biểu, dữ liệu số
+   - "image": Hình ảnh, biểu đồ, sơ đồ
+
+Lưu ý:
+- Nếu câu hỏi về biểu đồ, sơ đồ, hình ảnh → chọn "image"
+- Nếu câu hỏi về số liệu, bảng biểu → chọn "table"
+- Nếu câu hỏi về văn bản thường → chọn "text"
+- Có thể chọn nhiều loại nếu cần thiết
+
+{format_instructions}"""
 
             prompt_template = PromptTemplate(
                 template=template,
@@ -1039,7 +1080,7 @@ class RAG:
             chain = prompt_template | llm | parser
 
             # Invoke with error handling AND callbacks
-            response = chain.invoke({"query": query, "context_info": ""}, config={"callbacks": callbacks})
+            response = chain.invoke({"query": query, "context_info": context_info}, config={"callbacks": callbacks})
 
             # Validate and filter results with improved source matching
             if available_sources:
@@ -1114,8 +1155,43 @@ class RAG:
 
         return "".join(context_parts)
 
+    def process_image_documents(self, image_docs: List[Document]) -> str:
+        """
+        Process image documents to create a summary for context
+        
+        Args:
+            image_docs: List of image documents
+            
+        Returns:
+            Formatted string containing image summaries
+        """
+        if not image_docs:
+            return ""
+        
+        image_summaries = []
+        for i, doc in enumerate(image_docs, 1):
+            page = doc.metadata.get('page', 'unknown')
+            source = doc.metadata.get('source', 'unknown')
+            image_path = doc.metadata.get('image_path', '')
+            
+            # Extract summary from document content
+            content_lines = doc.page_content.split('\n')
+            summary_line = next((line for line in content_lines if line.startswith('Summary:')), None)
+            summary = summary_line.replace('Summary:', '').strip() if summary_line else 'No summary available'
+            
+            image_info = f"Hình ảnh {i}:\n"
+            image_info += f"  - Trang: {page}\n"
+            image_info += f"  - Nguồn: {source}\n"
+            image_info += f"  - Mô tả: {summary}\n"
+            if image_path:
+                image_info += f"  - Đường dẫn: {image_path}\n"
+            
+            image_summaries.append(image_info)
+        
+        return "\n".join(image_summaries)
+
     def generate_response(self, prompt: str, context: str, conversation_context: str = "", callbacks: Optional[list] = None) -> str:
-        # Enhanced prompt template that includes conversation context
+        # Enhanced prompt template that includes conversation context and image handling
         if conversation_context:
             template = """Bạn là WDM-AI-TEMIS, trợ lý AI thông minh chuyên phân tích tài liệu và hỗ trợ người dùng.
 
@@ -1125,22 +1201,89 @@ LỊCH SỬ HỘI THOẠI:
 NỘI DUNG TÀI LIỆU:
 {context}
 
+THÔNG TIN HÌNH ẢNH (nếu có):
+{image_context}
+
 CÂU HỎI HIỆN TẠI: {question}
 
 Hướng dẫn trả lời:
 - Nếu câu hỏi về thông tin cá nhân hoặc cuộc hội thoại trước: sử dụng lịch sử hội thoại
 - Nếu câu hỏi về tài liệu: sử dụng nội dung tài liệu  
+- Nếu câu hỏi về hình ảnh, biểu đồ, sơ đồ: sử dụng thông tin hình ảnh
 - Trả lời tự nhiên, thân thiện bằng tiếng Việt
 - Tham khảo cuộc hội thoại trước khi cần thiết
+- Khi nói về hình ảnh, hãy mô tả chi tiết và liên kết với nội dung tài liệu
 - Chỉ nói không biết khi cả lịch sử hội thoại và tài liệu đều không có thông tin
 
 Trả lời:"""
         else:
-            template = GENERATE_PROMPT
+            template = """Bạn là WDM-AI-TEMIS, trợ lý AI thông minh chuyên phân tích tài liệu và hỗ trợ người dùng.
+
+NỘI DUNG TÀI LIỆU:
+{context}
+
+THÔNG TIN HÌNH ẢNH (nếu có):
+{image_context}
+
+CÂU HỎI: {question}
+
+Hướng dẫn trả lời:
+- Sử dụng nội dung tài liệu để trả lời câu hỏi
+- Nếu câu hỏi về hình ảnh, biểu đồ, sơ đồ: sử dụng thông tin hình ảnh
+- Trả lời tự nhiên, thân thiện bằng tiếng Việt
+- Khi nói về hình ảnh, hãy mô tả chi tiết và liên kết với nội dung tài liệu
+- Chỉ nói không biết khi tài liệu không có thông tin liên quan
+
+Trả lời:"""
+        
+        # Extract image context if available
+        image_context = ""
+        if "<documents>" in context:
+            # Parse documents to find image types
+            import re
+            doc_pattern = r'<document index="(\d+)">(.*?)</document>'
+            matches = re.findall(doc_pattern, context, re.DOTALL)
+            
+            image_docs = []
+            for match in matches:
+                doc_content = match[1]
+                if '<type>image</type>' in doc_content:
+                    # Extract page_content from this document
+                    content_pattern = r'<content>(.*?)</content>'
+                    content_match = re.search(content_pattern, doc_content, re.DOTALL)
+                    if content_match:
+                        image_content = content_match.group(1).strip()
+                        # Create a mock Document object for processing
+                        from langchain_core.documents import Document
+                        mock_doc = Document(
+                            page_content=image_content,
+                            metadata={}
+                        )
+                        # Extract metadata
+                        if '<page>' in doc_content:
+                            page_match = re.search(r'<page>(.*?)</page>', doc_content)
+                            if page_match:
+                                mock_doc.metadata['page'] = page_match.group(1)
+                        if '<source>' in doc_content:
+                            source_match = re.search(r'<source>(.*?)</source>', doc_content)
+                            if source_match:
+                                mock_doc.metadata['source'] = source_match.group(1)
+                        if '<image_path>' in doc_content:
+                            path_match = re.search(r'<image_path>(.*?)</image_path>', doc_content)
+                            if path_match:
+                                mock_doc.metadata['image_path'] = path_match.group(1)
+                        
+                        image_docs.append(mock_doc)
+            
+            if image_docs:
+                image_context = self.process_image_documents(image_docs)
+        
+        if not image_context:
+            image_context = "Không có thông tin hình ảnh trong tài liệu."
         
         prompt_template = PromptTemplate(
             template=template,
-            input_variables=["context", "question"] + (["conversation_context"] if conversation_context else []),
+            input_variables=["context", "question", "image_context"] + (["conversation_context"] if conversation_context else []),
         )
 
         llm = ChatVertexAI(
@@ -1150,7 +1293,7 @@ Trả lời:"""
 
         chain = prompt_template | llm
         
-        invoke_params = {"context": context, "question": prompt}
+        invoke_params = {"context": context, "question": prompt, "image_context": image_context}
         if conversation_context:
             invoke_params["conversation_context"] = conversation_context
             
@@ -1242,7 +1385,7 @@ Trả lời:"""
                 analysis = self.query_analysis(
                     query,
                     available_sources=self.get_unique_sources(),
-                    available_types=["text", "table"],
+                    available_types=["text", "table", "image"],
                     callbacks=[langfuse_handler]
                 )
                 analysis_span.update(
