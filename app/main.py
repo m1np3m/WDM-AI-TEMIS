@@ -16,6 +16,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src import RAG
 from src.WDMParser.WDMParser import WDMPDFParser
+from src.setting import (
+    get_conversation_optimization_config,
+    create_optimized_conversation_config,
+    CONVERSATION_OPTIMIZATION_PRESETS
+)
 
 st.set_page_config(
     page_title="WDM-AI-TEMIS - RAG Chatbot",
@@ -60,6 +65,9 @@ def initialize_rag(
     persist_dir,
     use_reranker,
     _langfuse_client,
+    max_conversation_tokens=4000,
+    conversation_token_buffer=500,
+    enable_conversation_optimization=True,
 ):
     """Cache RAG instance để tránh khởi tạo lại mỗi lần refresh"""
     try:
@@ -73,8 +81,12 @@ def initialize_rag(
             persist_dir=persist_dir,
             use_reranker=use_reranker,
             langfuse_client=_langfuse_client,
+            enable_conversation_memory=True,  # Enable conversation features
+            max_conversation_tokens=max_conversation_tokens,
+            conversation_token_buffer=conversation_token_buffer,
+            enable_conversation_optimization=enable_conversation_optimization,
         )
-        logger.info(f"RAG initialized with cache")
+        logger.info(f"RAG initialized with conversation support and optimization")
         return rag
     except Exception as e:
         logger.error(f"RAG initialization error: {e}")
@@ -84,9 +96,18 @@ def initialize_rag(
 # ============================== USEFUL FUNCTIONS ==============================
 
 def clear_history():
-    if "messages" in st.session_state:
-        st.session_state.messages = []
-    st.success("History cleared!")
+    """Clear conversation history"""
+    try:
+        if "rag" in st.session_state and st.session_state.rag:
+            st.session_state.rag.clear_conversation()
+        # Also clear legacy session state messages if they exist
+        if "messages" in st.session_state:
+            st.session_state.messages = []
+        if "conversation_id" in st.session_state:
+            del st.session_state.conversation_id
+        st.success("Conversation history cleared!")
+    except Exception as e:
+        st.error(f"Error clearing history: {e}")
 
 def clear_rag_cache():
     """Clear RAG cache và reinitialize"""
@@ -200,9 +221,9 @@ async def process_pdfs_with_streamlit(pdf_files: List, credential_path: Optional
 def main():
     st.title("🤖 WDM-AI-TEMIS - RAG Chatbot")
 
-    # Initialize chat history
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+    # Initialize conversation
+    if "conversation_id" not in st.session_state:
+        st.session_state.conversation_id = None
 
     langfuse_client = initialize_langfuse()
 
@@ -268,8 +289,12 @@ def main():
         # Initialize RAG với cache - chỉ khi cần thiết
         persist_dir = "./qdrant_db"
 
-        # Tạo key để kiểm tra xem có cần khởi tạo lại không
-        rag_config_key = f"{embedding_type}_{embedding_model}_{enable_hybrid_search}_{chunk_type}_{use_reranker}"
+        # Get conversation optimization config from session state
+        conversation_config = st.session_state.get("conversation_optimization_config", 
+                                                  get_conversation_optimization_config("default"))
+        
+        # Tạo key để kiểm tra xem có cần khởi tạo lại không (bao gồm conversation settings)
+        rag_config_key = f"{embedding_type}_{embedding_model}_{enable_hybrid_search}_{chunk_type}_{use_reranker}_{conversation_config.get('max_conversation_tokens', 4000)}_{conversation_config.get('conversation_token_buffer', 500)}_{conversation_config.get('enable_optimization', True)}"
         
         # Tự động tạo collection name dựa trên config để tránh xung đột
         collection_name = f"wdm_{rag_config_key}".replace("-", "_").replace(".", "_").lower()
@@ -291,15 +316,40 @@ def main():
                     persist_dir=persist_dir,
                     use_reranker=use_reranker,
                     _langfuse_client=langfuse_client,
+                    max_conversation_tokens=conversation_config.get("max_conversation_tokens", 4000),
+                    conversation_token_buffer=conversation_config.get("conversation_token_buffer", 500),
+                    enable_conversation_optimization=conversation_config.get("enable_optimization", True),
                 )
 
             # Lưu vào session state
             st.session_state.rag = rag
             st.session_state.rag_config_key = rag_config_key
             logger.info(f"RAG initialized with config key: {rag_config_key}")
+            
+            # Start conversation if not exists
+            if not st.session_state.conversation_id:
+                try:
+                    st.session_state.conversation_id = rag.start_conversation(
+                        user_id=f"streamlit_user_{hash(str(st.session_state))}", 
+                        session_id="streamlit_session"
+                    )
+                    logger.info(f"Started conversation: {st.session_state.conversation_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to start conversation: {e}")
         else:
             # RAG đã có sẵn, không cần khởi tạo lại
             logger.debug("Using existing RAG from session state")
+            
+            # Ensure conversation is started
+            if not st.session_state.conversation_id and st.session_state.rag:
+                try:
+                    st.session_state.conversation_id = st.session_state.rag.start_conversation(
+                        user_id=f"streamlit_user_{hash(str(st.session_state))}", 
+                        session_id="streamlit_session"
+                    )
+                    logger.info(f"Started conversation: {st.session_state.conversation_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to start conversation: {e}")
 
         # Display current configuration
         with st.expander("📊 Current Vector Database Config", expanded=False):
@@ -316,6 +366,145 @@ def main():
                     st.write(f"**Sources:** {len(sources)} document(s)")
                 else:
                     st.write("**Sources:** No documents loaded")
+        
+        # Conversation Management
+        st.markdown("---")
+        st.subheader("💬 Conversation Management")
+        
+        if st.session_state.rag and st.session_state.conversation_id:
+            try:
+                conversations = st.session_state.rag.list_conversations()
+                current_conv = next((c for c in conversations if c['conversation_id'] == st.session_state.conversation_id), None)
+                
+                if current_conv:
+                    st.write(f"**Current Conversation:**")
+                    st.write(f"📝 {current_conv['title']}")
+                    st.write(f"💬 {current_conv['message_count']} messages")
+                    st.write(f"🕒 Last: {current_conv['last_updated'][:19]}")
+                
+                # Show conversation stats
+                history = st.session_state.rag.get_conversation_history()
+                if history:
+                    st.write(f"**Total Messages:** {len(history)}")
+                    if len(history) > 0:
+                        st.write(f"**Last Message:** {history[-1]['content'][:50]}...")
+                
+            except Exception as e:
+                st.write("Error loading conversation info")
+            
+            # Conversation actions
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🆕 New Chat", help="Start a new conversation"):
+                    try:
+                        new_conv_id = st.session_state.rag.start_conversation(
+                            user_id=f"streamlit_user_{hash(str(st.session_state))}", 
+                            session_id="streamlit_session"
+                        )
+                        st.session_state.conversation_id = new_conv_id
+                        st.success("Started new conversation!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error starting new conversation: {e}")
+            
+            with col2:
+                if st.button("📜 Show History", help="View conversation history"):
+                    try:
+                        history = st.session_state.rag.get_conversation_history()
+                        with st.expander("Conversation History", expanded=True):
+                            for i, msg in enumerate(history, 1):
+                                role_emoji = "👤" if msg["role"] == "user" else "🤖"
+                                st.write(f"{i}. {role_emoji} **{msg['role'].title()}:** {msg['content'][:100]}...")
+                    except Exception as e:
+                        st.error(f"Error loading history: {e}")
+        else:
+            st.info("No active conversation")
+
+        # Conversation Optimization Settings
+        st.markdown("---")
+        st.subheader("⚡ Conversation Optimization")
+        
+        # Optimization preset selection
+        optimization_preset = st.selectbox(
+            "Optimization Preset",
+            options=list(CONVERSATION_OPTIMIZATION_PRESETS.keys()),
+            index=list(CONVERSATION_OPTIMIZATION_PRESETS.keys()).index("default"),
+            help="Choose optimization preset for conversation history management"
+        )
+        
+        # Get selected preset config
+        preset_config = get_conversation_optimization_config(optimization_preset)
+        
+        # Enable/disable optimization
+        enable_optimization = st.checkbox(
+            "Enable Conversation Optimization",
+            value=preset_config.get("enable_optimization", True),
+            help="Enable conversation history optimization to manage context window"
+        )
+        
+        # Token management settings
+        with st.expander("🔧 Token Management", expanded=False):
+            max_tokens = st.number_input(
+                "Max Conversation Tokens",
+                min_value=1000,
+                max_value=10000,
+                value=preset_config.get("max_conversation_tokens", 4000),
+                step=500,
+                help="Maximum tokens allowed in conversation context"
+            )
+            
+            token_buffer = st.number_input(
+                "Token Buffer",
+                min_value=100,
+                max_value=2000,
+                value=preset_config.get("conversation_token_buffer", 500),
+                step=100,
+                help="Buffer tokens reserved for response generation"
+            )
+            
+            max_recent_messages = st.number_input(
+                "Max Recent Messages",
+                min_value=3,
+                max_value=50,
+                value=preset_config.get("max_recent_messages", 10),
+                step=1,
+                help="Maximum number of recent messages to keep"
+            )
+        
+        # Summarization settings
+        with st.expander("📝 Summarization", expanded=False):
+            summarize_after = st.number_input(
+                "Summarize After (messages)",
+                min_value=5,
+                max_value=100,
+                value=preset_config.get("summarize_after", 20),
+                step=5,
+                help="Trigger summarization after this many messages"
+            )
+            
+            summary_ratio = st.slider(
+                "Summary Ratio",
+                min_value=0.1,
+                max_value=0.8,
+                value=preset_config.get("summary_ratio", 0.3),
+                step=0.1,
+                help="Ratio of tokens allocated to summary vs recent messages"
+            )
+        
+        # Store optimization config in session state
+        st.session_state.conversation_optimization_config = {
+            "enable_optimization": enable_optimization,
+            "max_conversation_tokens": max_tokens,
+            "conversation_token_buffer": token_buffer,
+            "max_recent_messages": max_recent_messages,
+            "summarize_after": summarize_after,
+            "summary_ratio": summary_ratio,
+            **{k: v for k, v in preset_config.items() if k not in [
+                "enable_optimization", "max_conversation_tokens", 
+                "conversation_token_buffer", "max_recent_messages",
+                "summarize_after", "summary_ratio"
+            ]}
+        }
 
         # Vector Database Actions
         if st.button("🗑️ Clear Database"):
@@ -406,16 +595,32 @@ def main():
     with chat_col:
         st.subheader("🗨️ Conversation")
 
-        # Display chat history
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.write(message["content"])
+        # Display conversation history from RAG
+        if st.session_state.rag and st.session_state.conversation_id:
+            try:
+                conversation_history = st.session_state.rag.get_conversation_history()
+                for message in conversation_history:
+                    with st.chat_message(message["role"]):
+                        st.write(message["content"])
+            except Exception as e:
+                logger.error(f"Error loading conversation history: {e}")
+                st.error("Error loading conversation history")
+        else:
+            st.info("💡 Conversation will appear here once you start chatting!")
 
     with context_col:
         st.subheader("📋 Retrieved Context")
 
         # Always show initial state when not processing
-        if not st.session_state.messages:
+        has_conversation = False
+        if st.session_state.rag and st.session_state.conversation_id:
+            try:
+                conversation_history = st.session_state.rag.get_conversation_history()
+                has_conversation = len(conversation_history) > 0
+            except:
+                has_conversation = False
+        
+        if not has_conversation:
             st.info("💡 Start a conversation to see relevant documents here!")
         else:
             st.info("💡 Context will appear here when asking questions!")
@@ -434,8 +639,6 @@ def main():
 
     # Chat input at the bottom (outside columns)
     if prompt := st.chat_input("Ask me anything about your documents!"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-
         # Display user message immediately
         with chat_col:
             with st.chat_message("user"):
@@ -443,9 +646,12 @@ def main():
 
             with st.spinner("Searching knowledge base..."):
                 try:
-                    if st.session_state.rag:
-                        # Sử dụng method __call__ của RAG để lấy đầy đủ thông tin
-                        rag_result = st.session_state.rag(prompt)
+                    if st.session_state.rag and st.session_state.conversation_id:
+                        # Ensure we're using the correct conversation
+                        st.session_state.rag.use_conversation(st.session_state.conversation_id)
+                        
+                        # Use chat method for conversation-aware response
+                        rag_result = st.session_state.rag.chat(prompt)
 
                         # Extract thông tin từ dictionary result
                         docs = rag_result["docs"]
@@ -497,9 +703,16 @@ def main():
                                             st.markdown("---")
 
                                 # Show context used for generation (optional debug info)
+                                conversation_length = 0
+                                try:
+                                    if st.session_state.rag and st.session_state.conversation_id:
+                                        conversation_length = len(st.session_state.rag.get_conversation_history())
+                                except:
+                                    conversation_length = 0
+                                    
                                 if st.checkbox(
                                     "🔍 Show Full Context",
-                                    key=f"show_context_{len(st.session_state.messages)}",
+                                    key=f"show_context_{conversation_length}",
                                 ):
                                     with st.expander("📋 Full Context Sent to LLM", expanded=False):
                                         st.text(
@@ -507,6 +720,15 @@ def main():
                                             if len(context) > 2000
                                             else context
                                         )
+                                        
+                                        # Show conversation context if available
+                                        if rag_result.get('conversation_context'):
+                                            st.markdown("**Conversation Context:**")
+                                            st.text(
+                                                rag_result['conversation_context'][:1000] + "..."
+                                                if len(rag_result['conversation_context']) > 1000
+                                                else rag_result['conversation_context']
+                                            )
                             else:
                                 st.info("No relevant documents found for this query.")
 
@@ -514,6 +736,20 @@ def main():
                         with context_col:
                             st.info("📤 Upload PDF documents to start searching!")
                         response = "Please upload PDF documents first to start using the knowledge base."
+                        
+                        # Manually add to conversation if RAG exists but no conversation_id
+                        if st.session_state.rag and st.session_state.rag.conversation_manager:
+                            try:
+                                if not st.session_state.conversation_id:
+                                    st.session_state.conversation_id = st.session_state.rag.start_conversation(
+                                        user_id=f"streamlit_user_{hash(str(st.session_state))}", 
+                                        session_id="streamlit_session"
+                                    )
+                                st.session_state.rag.use_conversation(st.session_state.conversation_id)
+                                st.session_state.rag.conversation_manager.add_user_message(prompt)
+                                st.session_state.rag.conversation_manager.add_assistant_message(response)
+                            except Exception as e:
+                                logger.warning(f"Failed to manage conversation manually: {e}")
 
                 except Exception as e:
                     logger.error(f"RAG processing error: {e}")
@@ -521,10 +757,7 @@ def main():
                         st.error(f"Search error: {str(e)}")
                     response = f"Error processing query: {str(e)}"
 
-        # Add assistant response to messages
-        st.session_state.messages.append({"role": "assistant", "content": response})
-
-        # Display assistant response
+        # Display assistant response (conversation already managed by RAG)
         with chat_col:
             with st.chat_message("assistant"):
                 st.markdown(response)

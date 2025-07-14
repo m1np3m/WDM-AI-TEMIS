@@ -7,14 +7,23 @@ from typing import List, Optional, Union, Dict, Any
 from datetime import datetime
 import json
 import uuid
+import hashlib
 
 from langchain.output_parsers import PydanticOutputParser
 from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate
 from langchain_google_vertexai import ChatVertexAI
+from langchain_core.output_parsers import StrOutputParser
 from langfuse import Langfuse
 from loguru import logger
 from pydantic import BaseModel, Field
+
+try:
+    import tiktoken
+    TIKTOKEN_AVAILABLE = True
+except ImportError:
+    TIKTOKEN_AVAILABLE = False
+    logger.warning("tiktoken not available. Token counting will use character approximation.")
 
 from .WDMParser.WDMParser import WDMPDFParser, process_pdf_documents
 from .prompts import GENERATE_PROMPT, QUERY_ANALYSIS_PROMPT
@@ -34,6 +43,300 @@ def cleanup_qdrant_clients():
 
 # Register cleanup function
 atexit.register(cleanup_qdrant_clients)
+
+
+class ChatHistoryOptimizer:
+    """Advanced conversation history optimization with token management and LLM-based summarization"""
+    
+    def __init__(self, 
+                 max_recent_messages: int = 10,
+                 max_total_tokens: int = 4000,
+                 token_buffer: int = 500,
+                 summary_ratio: float = 0.3,
+                 model_name: str = "gemini-2.0-flash"
+                ):
+        self.max_recent_messages = max_recent_messages
+        self.max_total_tokens = max_total_tokens
+        self.token_buffer = token_buffer
+        self.summary_ratio = summary_ratio
+        self.model_name = model_name
+        
+        # Token counting setup
+        if TIKTOKEN_AVAILABLE:
+            try:
+                # Use a generic encoding if model-specific is not available
+                self.tokenizer = tiktoken.get_encoding("cl100k_base")  # GPT-4 compatible
+            except Exception:
+                self.tokenizer = None
+        else:
+            self.tokenizer = None
+        
+        # Initialize LLM for summarization
+        self.summarization_llm = ChatVertexAI(
+            model_name=model_name,
+            temperature=0.1,  # Low temperature for consistent summaries
+            max_tokens=512,   # Control summary length
+        )
+        
+        # Create summarization chain
+        self.summary_chain = self._create_summary_chain()
+        
+        # Metrics tracking
+        self.optimization_count = 0
+        self.total_tokens_saved = 0
+        self.summarization_success_rate = 0.0
+        self.successful_summarizations = 0
+        self.total_summarization_attempts = 0
+    
+    def _create_summary_chain(self):
+        """Create LangChain summarization chain"""
+        template = """Hãy tóm tắt cuộc hội thoại sau một cách ngắn gọn và chính xác:
+
+{conversation_history}
+
+Yêu cầu tóm tắt:
+- Chủ đề chính đã thảo luận
+- Thông tin quan trọng người dùng đã cung cấp  
+- Các quyết định hoặc kết luận quan trọng
+- Context cần thiết cho câu hỏi tiếp theo
+- Giữ lại tên và thông tin cá nhân người dùng
+
+Tóm tắt (tối đa 200 từ):"""
+        
+        prompt = PromptTemplate(
+            template=template,
+            input_variables=["conversation_history"]
+        )
+        
+        return prompt | self.summarization_llm | StrOutputParser()
+    
+    def count_tokens(self, text: str) -> int:
+        """Count tokens in text"""
+        if not text:
+            return 0
+            
+        if self.tokenizer:
+            try:
+                return len(self.tokenizer.encode(text))
+            except Exception as e:
+                logger.warning(f"Token counting failed: {e}, using character approximation")
+        
+        # Fallback: character-based approximation (roughly 4 chars = 1 token)
+        return max(1, len(text) // 4)
+    
+    def should_optimize(self, messages: List["ConversationMessage"]) -> bool:
+        """Check if optimization is needed"""
+        if len(messages) <= self.max_recent_messages:
+            return False
+        
+        # Calculate total tokens
+        total_tokens = sum(self.count_tokens(msg.content) for msg in messages)
+        return total_tokens > (self.max_total_tokens - self.token_buffer)
+    
+    def optimize_conversation_history(self, messages: List["ConversationMessage"]) -> str:
+        """Main optimization method"""
+        if not messages:
+            return ""
+        
+        # If optimization not needed, return simple format
+        if not self.should_optimize(messages):
+            return self._format_messages_simple(messages[-self.max_recent_messages:])
+        
+        self.optimization_count += 1
+        
+        try:
+            # Calculate optimal split
+            split_info = self._calculate_optimal_split(messages)
+            
+            # Get messages to summarize and keep
+            messages_to_summarize = messages[:split_info['summarize_count']]
+            recent_messages = messages[split_info['summarize_count']:]
+            
+            # Create summary if needed
+            summary = ""
+            if messages_to_summarize:
+                summary = self._create_summary_with_fallback(messages_to_summarize)
+            
+            # Build optimized context
+            context_parts = []
+            
+            if summary:
+                context_parts.append(f"Tóm tắt cuộc hội thoại trước:\n{summary}")
+            
+            if recent_messages:
+                context_parts.append("Cuộc hội thoại gần đây:")
+                context_parts.extend([
+                    f"{msg.role.capitalize()}: {msg.content}" 
+                    for msg in recent_messages
+                ])
+            
+            optimized_context = "\n".join(context_parts)
+            
+            # Track token savings
+            original_tokens = sum(self.count_tokens(msg.content) for msg in messages)
+            optimized_tokens = self.count_tokens(optimized_context)
+            self.total_tokens_saved += max(0, original_tokens - optimized_tokens)
+            
+            return optimized_context
+            
+        except Exception as e:
+            logger.warning(f"Optimization failed: {e}, falling back to simple truncation")
+            return self._simple_context_fallback(messages)
+    
+    def _calculate_optimal_split(self, messages: List["ConversationMessage"]) -> Dict[str, int]:
+        """Calculate optimal token allocation between recent messages and summary"""
+        available_tokens = self.max_total_tokens - self.token_buffer
+        summary_tokens = int(available_tokens * self.summary_ratio)
+        recent_tokens = available_tokens - summary_tokens
+        
+        # Work backwards from latest messages to fit in recent_tokens
+        current_tokens = 0
+        recent_count = 0
+        
+        for i in range(len(messages) - 1, -1, -1):
+            msg_tokens = self.count_tokens(messages[i].content)
+            if current_tokens + msg_tokens <= recent_tokens:
+                current_tokens += msg_tokens
+                recent_count += 1
+            else:
+                break
+        
+        # Ensure we keep at least some recent messages
+        recent_count = max(min(self.max_recent_messages // 2, recent_count), min(3, len(messages)))
+        summarize_count = max(0, len(messages) - recent_count)
+        
+        return {
+            'summarize_count': summarize_count,
+            'recent_count': recent_count,
+            'estimated_summary_tokens': summary_tokens,
+            'estimated_recent_tokens': recent_tokens
+        }
+    
+    def _create_summary_with_fallback(self, messages: List["ConversationMessage"]) -> str:
+        """Create LLM-based summary with fallback"""
+        self.total_summarization_attempts += 1
+        
+        try:
+            # Format messages for summarization
+            conversation_text = self._format_messages_for_summary(messages)
+            
+            # Use LangChain chain for summarization
+            summary = self.summary_chain.invoke({
+                "conversation_history": conversation_text
+            })
+            
+            if isinstance(summary, str) and len(summary.strip()) > 10:
+                self.successful_summarizations += 1
+                self._update_success_rate()
+                return summary.strip()
+            else:
+                raise ValueError("Empty or invalid summary returned")
+                
+        except Exception as e:
+            logger.warning(f"LLM summarization failed: {e}, using fallback")
+            return self._fallback_summary(messages)
+    
+    async def create_summary_async(self, messages: List["ConversationMessage"]) -> str:
+        """Create summary asynchronously using LangChain"""
+        self.total_summarization_attempts += 1
+        
+        try:
+            # Format messages for summarization
+            conversation_text = self._format_messages_for_summary(messages)
+            
+            # Use async invoke with LangChain
+            summary = await self.summary_chain.ainvoke({
+                "conversation_history": conversation_text
+            })
+            
+            if isinstance(summary, str) and len(summary.strip()) > 10:
+                self.successful_summarizations += 1
+                self._update_success_rate()
+                return summary.strip()
+            else:
+                raise ValueError("Empty or invalid summary returned")
+                
+        except Exception as e:
+            logger.warning(f"Async LLM summarization failed: {e}")
+            return self._fallback_summary(messages)
+    
+    def _format_messages_for_summary(self, messages: List["ConversationMessage"]) -> str:
+        """Format conversation messages for summarization"""
+        if not messages:
+            return "Không có nội dung hội thoại."
+            
+        formatted_messages = []
+        
+        for msg in messages:
+            role = "Người dùng" if msg.role == "user" else "Trợ lý"
+            timestamp = msg.timestamp.strftime("%H:%M")
+            # Truncate very long messages for summarization
+            content = msg.content[:500] + "..." if len(msg.content) > 500 else msg.content
+            formatted_messages.append(f"[{timestamp}] {role}: {content}")
+        
+        return "\n".join(formatted_messages)
+    
+    def _fallback_summary(self, messages: List["ConversationMessage"]) -> str:
+        """Fallback summary method if LLM fails"""
+        if not messages:
+            return "Không có nội dung hội thoại."
+        
+        # Simple extraction of key topics
+        user_messages = [msg.content for msg in messages if msg.role == "user"]
+        if not user_messages:
+            return "Cuộc hội thoại chưa có câu hỏi từ người dùng."
+        
+        # Get recent user topics
+        recent_topics = user_messages[-3:] if len(user_messages) >= 3 else user_messages
+        topics_text = ", ".join([topic[:50] + "..." if len(topic) > 50 else topic for topic in recent_topics])
+        
+        return f"Cuộc hội thoại trước bao gồm các chủ đề: {topics_text}"
+    
+    def _format_messages_simple(self, messages: List["ConversationMessage"]) -> str:
+        """Simple message formatting without optimization"""
+        if not messages:
+            return ""
+        
+        formatted = []
+        for msg in messages:
+            formatted.append(f"{msg.role.capitalize()}: {msg.content}")
+        
+        return "Cuộc hội thoại gần đây:\n" + "\n".join(formatted)
+    
+    def _simple_context_fallback(self, messages: List["ConversationMessage"]) -> str:
+        """Simple fallback when optimization fails"""
+        # Just take the most recent messages
+        recent_messages = messages[-self.max_recent_messages:]
+        return self._format_messages_simple(recent_messages)
+    
+    def _update_success_rate(self):
+        """Update summarization success rate"""
+        if self.total_summarization_attempts > 0:
+            self.summarization_success_rate = self.successful_summarizations / self.total_summarization_attempts
+    
+    def compress_similar_messages(self, messages: List["ConversationMessage"]) -> List["ConversationMessage"]:
+        """Merge similar consecutive messages (future enhancement)"""
+        # TODO: Implement semantic similarity compression
+        return messages
+    
+    def identify_important_messages(self, messages: List["ConversationMessage"]) -> List[str]:
+        """Identify messages that should be preserved (future enhancement)"""
+        # TODO: Implement importance scoring
+        # Criteria: contains questions, decisions, important information
+        return [msg.message_id for msg in messages]
+    
+    def get_optimization_stats(self) -> Dict[str, Any]:
+        """Get optimization statistics"""
+        return {
+            "total_optimizations": self.optimization_count,
+            "total_tokens_saved": self.total_tokens_saved,
+            "summarization_success_rate": self.summarization_success_rate,
+            "successful_summarizations": self.successful_summarizations,
+            "total_summarization_attempts": self.total_summarization_attempts,
+            "tokenizer_available": self.tokenizer is not None,
+            "max_total_tokens": self.max_total_tokens,
+            "token_buffer": self.token_buffer
+        }
 
 
 class ConversationMessage(BaseModel):
@@ -59,12 +362,30 @@ class ConversationThread(BaseModel):
 
 
 class ConversationMemory:
-    """Memory management for conversations"""
+    """Enhanced memory management for conversations with token optimization"""
     
-    def __init__(self, max_messages_in_context: int = 10, summarize_after: int = 20):
+    def __init__(self, 
+                 max_messages_in_context: int = 10, 
+                 summarize_after: int = 20,
+                 max_tokens: int = 4000,
+                 token_buffer: int = 500,
+                 enable_optimization: bool = True):
         self.max_messages_in_context = max_messages_in_context
         self.summarize_after = summarize_after
+        self.max_tokens = max_tokens
+        self.token_buffer = token_buffer
+        self.enable_optimization = enable_optimization
         self.conversations: Dict[str, ConversationThread] = {}
+        
+        # Initialize optimizer if enabled
+        if enable_optimization:
+            self.history_optimizer = ChatHistoryOptimizer(
+                max_recent_messages=max_messages_in_context,
+                max_total_tokens=max_tokens,
+                token_buffer=token_buffer
+            )
+        else:
+            self.history_optimizer = None
         
     def create_conversation(self, user_id: Optional[str] = None, session_id: Optional[str] = None) -> str:
         """Create a new conversation thread"""
@@ -101,22 +422,39 @@ class ConversationMemory:
         return message.message_id
     
     def get_conversation_context(self, conversation_id: str, include_summary: bool = True) -> str:
-        """Get conversation context for LLM"""
+        """Enhanced conversation context with token optimization"""
         if conversation_id not in self.conversations:
             return ""
         
         conversation = self.conversations[conversation_id]
+        
+        # Use optimizer if available and enabled
+        if self.enable_optimization and self.history_optimizer:
+            try:
+                optimized_context = self.history_optimizer.optimize_conversation_history(
+                    conversation.messages
+                )
+                return optimized_context
+            except Exception as e:
+                logger.warning(f"Optimization failed for conversation {conversation_id}: {e}, falling back to simple method")
+                return self._simple_context_fallback(conversation)
+        else:
+            # Original simple approach
+            return self._simple_context_fallback(conversation)
+    
+    def _simple_context_fallback(self, conversation: ConversationThread) -> str:
+        """Simple context fallback method"""
         context_parts = []
         
-        # Add summary if available and requested
-        if include_summary and conversation.summary:
-            context_parts.append(f"Previous conversation summary: {conversation.summary}")
+        # Add summary if available
+        if conversation.summary:
+            context_parts.append(f"Tóm tắt cuộc hội thoại trước: {conversation.summary}")
         
         # Get recent messages (limit to max_messages_in_context)
         recent_messages = conversation.messages[-self.max_messages_in_context:]
         
         if recent_messages:
-            context_parts.append("Recent conversation:")
+            context_parts.append("Cuộc hội thoại gần đây:")
             for msg in recent_messages:
                 context_parts.append(f"{msg.role.capitalize()}: {msg.content}")
         
@@ -145,18 +483,45 @@ class ConversationMemory:
             del self.conversations[conversation_id]
     
     def _maybe_summarize_conversation(self, conversation_id: str):
-        """Summarize conversation if it gets too long"""
+        """Enhanced summarization with LLM integration"""
         conversation = self.conversations[conversation_id]
         
         # Only summarize if we have enough messages and no recent summary
         if len(conversation.messages) % self.summarize_after == 0:
             try:
-                # Simple summarization - in production, use LLM
-                messages_text = "\n".join([f"{msg.role}: {msg.content}" for msg in conversation.messages[:-self.max_messages_in_context]])
-                conversation.summary = f"Earlier conversation covered: {messages_text[:200]}..."
-                logger.info(f"Summarized conversation {conversation_id}")
+                # Get messages to summarize (exclude recent ones to keep in context)
+                messages_to_summarize = conversation.messages[:-self.max_messages_in_context]
+                
+                if not messages_to_summarize:
+                    return
+                
+                # Use optimizer's LLM-based summarization if available
+                if self.enable_optimization and self.history_optimizer:
+                    try:
+                        summary = self.history_optimizer._create_summary_with_fallback(messages_to_summarize)
+                        conversation.summary = summary
+                        logger.info(f"LLM-based summary created for conversation {conversation_id}")
+                        return
+                    except Exception as e:
+                        logger.warning(f"LLM summarization failed for conversation {conversation_id}: {e}")
+                
+                # Fallback to simple summarization
+                messages_text = "\n".join([f"{msg.role}: {msg.content}" for msg in messages_to_summarize])
+                conversation.summary = f"Cuộc hội thoại trước bao gồm: {messages_text[:200]}..."
+                logger.info(f"Simple summary created for conversation {conversation_id}")
+                
             except Exception as e:
                 logger.warning(f"Failed to summarize conversation {conversation_id}: {e}")
+    
+    def get_optimization_stats(self) -> Dict[str, Any]:
+        """Get optimization statistics"""
+        if self.enable_optimization and self.history_optimizer:
+            return self.history_optimizer.get_optimization_stats()
+        else:
+            return {
+                "optimization_enabled": False,
+                "message": "Optimization is disabled"
+            }
 
 
 class ConversationManager:
@@ -230,6 +595,10 @@ class RAG:
         use_reranker: bool,
         langfuse_client: Optional[Langfuse] = None,
         enable_conversation_memory: bool = True,
+        # New conversation optimization parameters
+        max_conversation_tokens: int = 4000,
+        conversation_token_buffer: int = 500,
+        enable_conversation_optimization: bool = True,
     ):
         self.embedding_type = embedding_type
         self.embedding_model = embedding_model
@@ -257,10 +626,22 @@ class RAG:
             self.reranker_name = "Disabled"
         self.langfuse = langfuse_client
         
-        # Conversation management
+        # Conversation management with optimization
         self.enable_conversation_memory = enable_conversation_memory
+        self.max_conversation_tokens = max_conversation_tokens
+        self.conversation_token_buffer = conversation_token_buffer
+        self.enable_conversation_optimization = enable_conversation_optimization
+        
         if enable_conversation_memory:
-            self.conversation_manager = ConversationManager()
+            # Create enhanced ConversationMemory with optimization
+            memory = ConversationMemory(
+                max_messages_in_context=10,
+                summarize_after=20,
+                max_tokens=max_conversation_tokens,
+                token_buffer=conversation_token_buffer,
+                enable_optimization=enable_conversation_optimization
+            )
+            self.conversation_manager = ConversationManager(memory=memory)
         else:
             self.conversation_manager = None
 
@@ -362,6 +743,23 @@ class RAG:
             }
         except Exception as e:
             return {"error": f"Failed to get conversation context: {e}"}
+    
+    def get_conversation_optimization_stats(self) -> Dict[str, Any]:
+        """Get conversation optimization statistics"""
+        if not self.conversation_manager or not self.conversation_manager.memory:
+            return {"error": "Conversation memory not available"}
+        
+        try:
+            stats = self.conversation_manager.memory.get_optimization_stats()
+            stats.update({
+                "max_conversation_tokens": self.max_conversation_tokens,
+                "conversation_token_buffer": self.conversation_token_buffer,
+                "optimization_enabled": self.enable_conversation_optimization,
+                "tiktoken_available": TIKTOKEN_AVAILABLE
+            })
+            return stats
+        except Exception as e:
+            return {"error": f"Failed to get optimization stats: {e}"}
 
     async def process_pdfs_bytes(
         self,
