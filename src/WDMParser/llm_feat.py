@@ -122,7 +122,12 @@ def get_is_new_section_context(contexts: List[str], return_prompt: bool = False)
         credentials=credentials,
     )
 
-    template = """You are an expert in document structure analysis. Your task is to examine text segments that appear 
+    try:
+        from ..prompts import DOCUMENT_SECTION_ANALYSIS_PROMPT
+        template = DOCUMENT_SECTION_ANALYSIS_PROMPT
+    except ImportError:
+        # Fallback if import fails
+        template = """You are an expert in document structure analysis. Your task is to examine text segments that appear 
 immediately before tables or sections, and determine if they clearly indicate the start of a new section, 
 item, or table.
 
@@ -207,7 +212,12 @@ def get_is_has_header(
         credentials=credentials,
     )
 
-    template = """You are an expert in analyzing table data structures. Your task is to examine tables and determine if their first row contains meaningful column headers.
+    try:
+        from ..prompts import TABLE_HEADER_ANALYSIS_PROMPT
+        template = TABLE_HEADER_ANALYSIS_PROMPT
+    except ImportError:
+        # Fallback if import fails
+        template = """You are an expert in analyzing table data structures. Your task is to examine tables and determine if their first row contains meaningful column headers.
 
 You will receive information about multiple tables. For each table, you'll see:
 1. "Header Row": The extracted first row that might be headers

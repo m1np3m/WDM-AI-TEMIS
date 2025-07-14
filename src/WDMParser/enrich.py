@@ -238,16 +238,22 @@ class Enrich_VertexAI:
 
         self.output_parser = StrOutputParser()
 
-        self.summary_text = """
-        This image contains a data table or a keyboard shortcut matrix. Please analyze and describe it thoroughly based on the following instructions:
-        1. Summarize the table's structure, content, and headers.
-        2. Identify repeated patterns, data types, or hierarchical categories.
-        3. Highlight any special formatting, such as merged cells, bold/italicized text, or color coding.
-        4. Describe whether the table is horizontal, vertical, or matrix-like.
-        5. Mention any missing values, inconsistencies, or notes.
-        6. Are ther any merge collumns or rows in the table, describe it carefully?
-        Your response should be detailed and help reconstruct the table's structure later.
-        """
+        # Import prompts at the top level to avoid circular imports
+        try:
+            from ..prompts import IMAGE_SUMMARY_PROMPT
+            self.summary_text = IMAGE_SUMMARY_PROMPT.strip()
+        except ImportError:
+            # Fallback if import fails
+            self.summary_text = """
+            This image contains a data table or a keyboard shortcut matrix. Please analyze and describe it thoroughly based on the following instructions:
+            1. Summarize the table's structure, content, and headers.
+            2. Identify repeated patterns, data types, or hierarchical categories.
+            3. Highlight any special formatting, such as merged cells, bold/italicized text, or color coding.
+            4. Describe whether the table is horizontal, vertical, or matrix-like.
+            5. Mention any missing values, inconsistencies, or notes.
+            6. Are ther any merge collumns or rows in the table, describe it carefully?
+            Your response should be detailed and help reconstruct the table's structure later.
+            """
 
     def _decode_image(self, base64_image):
         return base64.b64decode(base64_image)
@@ -270,29 +276,37 @@ class Enrich_VertexAI:
 
     @retry_vertex_ai_call
     def table_markdown_context(self, base64_image, markdown_content, summary_content):
-        context_prompt = f"""
-        You are given three sources of information related to a single table:
-        1. **Raw Extracted Markdown Table**:
-        {markdown_content}
-        2. **Table Summary**:
-        {summary_content}
-        3. **Table Image**: (see below)
-        ### Note:
-        Note that, when the table has merged rows, the Markdown format will not show the duplicate rows or columns for the merged cells. Instead, it will show the first row or column with the content, and the subsequent rows or columns will be left empty.
-        Look from pdf it look like this:
-        | STT | Họ tên       | Môn học      | Điểm |
-        |-----|--------------|--------------|------|
-        | 1   | Nguyễn Văn A | Toán         | 8    |
-        |     |              | Lý           | 7    |
-        |     |              | Hóa          | 9    |
-        | 2   | Trần Thị B   | Toán         | 8.5  |
-        |     |              | Lý           | 6.5  |
-        But If table merged!Output rows when you returns need to look like this, we need all meaning from the table:
-        | STT | Họ tên       | Môn học      | Điểm |
-        |-----|--------------|--------------|------|
-        | 1   | Nguyễn Văn A | Toán         | 8    |
-        |     | Nguyễn Văn A | Lý           | 7    |
-        |     | Nguyễn Văn A | Hóa          | 9    |
+        try:
+            from ..prompts import TABLE_CONTEXT_ENRICHMENT_PROMPT
+            context_prompt = TABLE_CONTEXT_ENRICHMENT_PROMPT.format(
+                markdown_content=markdown_content,
+                summary_content=summary_content
+            )
+        except ImportError:
+            # Fallback if import fails
+            context_prompt = f"""
+            You are given three sources of information related to a single table:
+            1. **Raw Extracted Markdown Table**:
+            {markdown_content}
+            2. **Table Summary**:
+            {summary_content}
+            3. **Table Image**: (see below)
+            ### Note:
+            Note that, when the table has merged rows, the Markdown format will not show the duplicate rows or columns for the merged cells. Instead, it will show the first row or column with the content, and the subsequent rows or columns will be left empty.
+            Look from pdf it look like this:
+            | STT | Họ tên       | Môn học      | Điểm |
+            |-----|--------------|--------------|------|
+            | 1   | Nguyễn Văn A | Toán         | 8    |
+            |     |              | Lý           | 7    |
+            |     |              | Hóa          | 9    |
+            | 2   | Trần Thị B   | Toán         | 8.5  |
+            |     |              | Lý           | 6.5  |
+            But If table merged!Output rows when you returns need to look like this, we need all meaning from the table:
+            | STT | Họ tên       | Môn học      | Điểm |
+            |-----|--------------|--------------|------|
+            | 1   | Nguyễn Văn A | Toán         | 8    |
+            |     | Nguyễn Văn A | Lý           | 7    |
+            |     | Nguyễn Văn A | Hóa          | 9    |
         | 2   | Trần Thị B   | Toán         | 8.5  |
         |     | Trần Thị B   | Lý           | 6.5  |
         If the table merged columns, it will look like this:

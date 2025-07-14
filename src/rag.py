@@ -26,7 +26,14 @@ except ImportError:
     logger.warning("tiktoken not available. Token counting will use character approximation.")
 
 from .WDMParser.WDMParser import WDMPDFParser, process_pdf_documents
-from .prompts import GENERATE_PROMPT, QUERY_ANALYSIS_PROMPT
+from .prompts import (
+    GENERATE_PROMPT, 
+    QUERY_ANALYSIS_PROMPT,
+    CONVERSATION_SUMMARY_PROMPT,
+    RAG_QUERY_ANALYSIS_PROMPT,
+    RAG_RESPONSE_WITH_CONVERSATION_PROMPT,
+    RAG_RESPONSE_SIMPLE_PROMPT
+)
 from .reranker import Reranker
 from .setting import REANKER_MODEL_NAME, VECTORSTORE_CONFIG
 from .vectorstore import QdrantClientManager, VectorStore
@@ -90,18 +97,7 @@ class ChatHistoryOptimizer:
     
     def _create_summary_chain(self):
         """Create LangChain summarization chain"""
-        template = """Hãy tóm tắt cuộc hội thoại sau một cách ngắn gọn và chính xác:
-
-{conversation_history}
-
-Yêu cầu tóm tắt:
-- Chủ đề chính đã thảo luận
-- Thông tin quan trọng người dùng đã cung cấp  
-- Các quyết định hoặc kết luận quan trọng
-- Context cần thiết cho câu hỏi tiếp theo
-- Giữ lại tên và thông tin cá nhân người dùng
-
-Tóm tắt (tối đa 200 từ):"""
+        template = CONVERSATION_SUMMARY_PROMPT
         
         prompt = PromptTemplate(
             template=template,
@@ -1047,26 +1043,7 @@ class RAG:
                 context_info += f"\nAvailable types: {', '.join(available_types)}"
 
             # Enhanced prompt to include image type
-            template = """Bạn là một AI chuyên phân tích câu hỏi để xác định nguồn tài liệu và loại nội dung phù hợp.
-
-Câu hỏi: {query}
-
-Thông tin có sẵn: {context_info}
-
-Hãy phân tích câu hỏi và xác định:
-1. SOURCES: Nguồn tài liệu nào cần tìm kiếm (tên file, tài liệu cụ thể)
-2. TYPES: Loại nội dung nào phù hợp:
-   - "text": Văn bản thường
-   - "table": Bảng biểu, dữ liệu số
-   - "image": Hình ảnh, biểu đồ, sơ đồ
-
-Lưu ý:
-- Nếu câu hỏi về biểu đồ, sơ đồ, hình ảnh → chọn "image"
-- Nếu câu hỏi về số liệu, bảng biểu → chọn "table"
-- Nếu câu hỏi về văn bản thường → chọn "text"
-- Có thể chọn nhiều loại nếu cần thiết
-
-{format_instructions}"""
+            template = RAG_QUERY_ANALYSIS_PROMPT
 
             prompt_template = PromptTemplate(
                 template=template,
@@ -1193,48 +1170,9 @@ Lưu ý:
     def generate_response(self, prompt: str, context: str, conversation_context: str = "", callbacks: Optional[list] = None) -> str:
         # Enhanced prompt template that includes conversation context and image handling
         if conversation_context:
-            template = """Bạn là WDM-AI-TEMIS, trợ lý AI thông minh chuyên phân tích tài liệu và hỗ trợ người dùng.
-
-LỊCH SỬ HỘI THOẠI:
-{conversation_context}
-
-NỘI DUNG TÀI LIỆU:
-{context}
-
-THÔNG TIN HÌNH ẢNH (nếu có):
-{image_context}
-
-CÂU HỎI HIỆN TẠI: {question}
-
-Hướng dẫn trả lời:
-- Nếu câu hỏi về thông tin cá nhân hoặc cuộc hội thoại trước: sử dụng lịch sử hội thoại
-- Nếu câu hỏi về tài liệu: sử dụng nội dung tài liệu  
-- Nếu câu hỏi về hình ảnh, biểu đồ, sơ đồ: sử dụng thông tin hình ảnh
-- Trả lời tự nhiên, thân thiện bằng tiếng Việt
-- Tham khảo cuộc hội thoại trước khi cần thiết
-- Khi nói về hình ảnh, hãy mô tả chi tiết và liên kết với nội dung tài liệu
-- Chỉ nói không biết khi cả lịch sử hội thoại và tài liệu đều không có thông tin
-
-Trả lời:"""
+            template = RAG_RESPONSE_WITH_CONVERSATION_PROMPT
         else:
-            template = """Bạn là WDM-AI-TEMIS, trợ lý AI thông minh chuyên phân tích tài liệu và hỗ trợ người dùng.
-
-NỘI DUNG TÀI LIỆU:
-{context}
-
-THÔNG TIN HÌNH ẢNH (nếu có):
-{image_context}
-
-CÂU HỎI: {question}
-
-Hướng dẫn trả lời:
-- Sử dụng nội dung tài liệu để trả lời câu hỏi
-- Nếu câu hỏi về hình ảnh, biểu đồ, sơ đồ: sử dụng thông tin hình ảnh
-- Trả lời tự nhiên, thân thiện bằng tiếng Việt
-- Khi nói về hình ảnh, hãy mô tả chi tiết và liên kết với nội dung tài liệu
-- Chỉ nói không biết khi tài liệu không có thông tin liên quan
-
-Trả lời:"""
+            template = RAG_RESPONSE_SIMPLE_PROMPT
         
         # Extract image context if available
         image_context = ""
